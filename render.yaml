@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: janhavi-backend
+    runtime: docker
+    rootDir: backend
+    plan: free
+    envVars:
+      - key: ADMIN_KEY
+        generateValue: true

@@ -1,0 +1,43 @@
+<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>Janhavi Admin</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Segoe UI,sans-serif;background:#eef2f1;color:#222}
+#ap{display:flex;min-height:100vh}#sb{width:230px;background:#f6f8f7;border-right:1px solid #dde;padding:16px}
+#sb h3{margin:0 0 16px;color:#0f766e}#sb a{display:block;padding:11px 14px;margin:4px 0;border-radius:10px;cursor:pointer}
+#sb a.on{background:#2dd4bf;color:#fff;font-weight:600}#mn{flex:1;padding:20px;min-width:0}
+.g{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px}.cd{background:#fff;border-radius:14px;padding:16px;margin:8px 0;box-shadow:0 1px 3px #0001}
+.cd small{color:#888}.cd b.n{display:block;font-size:28px;margin-top:8px}
+input,textarea,select{width:100%;padding:8px;margin:3px 0;border:1px solid #ccd;border-radius:8px}button{background:#14b8a6;color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer;margin:3px}
+.bar{height:8px;background:#e5e7eb;border-radius:6px;margin:4px 0 10px}.bar i{display:block;height:8px;background:#2dd4bf;border-radius:6px}
+#lg{max-width:360px;margin:15vh auto;text-align:center}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #eee;text-align:left}
+@media(max-width:700px){#ap{flex-direction:column}#sb{width:100%;display:flex;flex-wrap:wrap;gap:4px}#sb h3{width:100%}}
+</style>
+<div id=lg class=cd><h2>👑 Janhavi Panwar</h2><input id=k type=password placeholder="Admin Key"><button onclick=ent()>Login</button></div>
+<div id=ap hidden><div id=sb><h3>👑 Janhavi Admin</h3></div><div id=mn></div></div>
+<script>
+let K='',C=[],U={};const $=i=>document.getElementById(i),R=n=>'₹'+(n||0).toLocaleString('en-IN');
+const NAV=[['dash','Dashboard'],['crs','Courses & Offers'],['ord','Orders'],['stu','Customers / Send'],['liv','Live Classes'],['rev','Reviews'],['set','Settings']];
+async function A(m,p,b){const r=await fetch(p,{method:m,headers:{'X-Admin-Key':K,'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});return r.json()}
+async function ent(){K=$('k').value;const r=await A('GET','/api/admin/stats');if(r.error)return alert('Wrong key');$('lg').hidden=true;$('ap').hidden=false;go('dash')}
+function go(n){$('sb').innerHTML='<h3>👑 Janhavi Admin</h3>'+NAV.map(x=>`<a class="${x[0]==n?'on':''}" onclick="go('${x[0]}')">${x[1]}</a>`).join('');window[n]()}
+function line(L,V){const W=640,H=200,m=Math.max(...V,1),n=V.length,P=V.map((v,i)=>[i*W/(n-1),H-v/m*H*.85-5]);const d=P.map((p,i)=>(i?'L':'M')+p[0]+' '+p[1]).join('');
+return `<svg viewBox="0 0 ${W} ${H+24}" style="width:100%"><defs><linearGradient id=gr x1=0 y1=0 x2=0 y2=1><stop offset=0 stop-color="#2dd4bf" stop-opacity=.4 /><stop offset=1 stop-color="#2dd4bf" stop-opacity=0 /></linearGradient></defs><path d="${d}L${W} ${H}L0 ${H}Z" fill="url(#gr)"/><path d="${d}" fill=none stroke="#14b8a6" stroke-width=3 />${P.map((p,i)=>i%3==0?`<text x=${p[0]} y=${H+18} font-size=11 fill=#888 text-anchor=middle>${L[i]}</text>`:'').join('')}</svg>`}
+async function dash(){const s=await A('GET','/api/admin/stats');C=await (await fetch('/api/courses')).json();const mx=Math.max(...(s.top||[]).map(t=>t.Sales),1);
+$('mn').innerHTML=`<h2>Overview</h2><div class=g>${[['Total Revenue',R(s.revenue)],['Total Orders',s.orders],['Total Customers',s.customers],['Pending Payments',s.pending],['Reviews to Approve',s.reviewsPending]].map(x=>`<div class=cd><small>${x[0]}</small><b class=n>${x[1]}</b></div>`).join('')}</div>
+<div class=cd><b>Sales Analytic</b> <small>(last 14 days)</small>${line(s.labels,s.values)}</div>
+<div class=g><div class=cd><b>Top Selling Courses</b><br><br>${(s.top||[]).map(t=>`${t.Title} <small>${t.Sales} sales</small><div class=bar><i style="width:${t.Sales/mx*100}%"></i></div>`).join('')||'<small>Abhi koi sale nahi</small>'}</div>
+<div class=cd><b>Current Offers</b><br><br>${C.map(c=>`${c.Title} <small>${c.OfferLabel||''} ${R(c.Price)} <s>${R(c.MRP)}</s></small><div class=bar><i style="width:${Math.round((c.MRP-c.Price)/c.MRP*100)}%"></i></div>`).join('')}</div></div>`}
+async function crs(){C=await (await fetch('/api/courses')).json();$('mn').innerHTML='<h2>Courses & Offers</h2><button onclick=addc()>+ New course</button>'+C.map((c,i)=>`<div class=cd><b>${c.Title}</b><input value="${c.Title}" oninput="C[${i}].Title=this.value">Price <input type=number value=${c.Price} oninput="C[${i}].Price=+this.value">MRP <input type=number value=${c.MRP} oninput="C[${i}].MRP=+this.value">Offer label <input value="${c.OfferLabel||''}" oninput="C[${i}].OfferLabel=this.value">Offer ends (2026-12-31T23:59:00+05:30)<input value="${c.OfferEnds||''}" oninput="C[${i}].OfferEnds=this.value"><button onclick="sc(${i})">Save</button></div>`).join('')}
+async function sc(i){await A('POST','/api/admin/courses',C[i]);alert('Saved')}
+async function addc(){await A('POST','/api/admin/courses',{Title:'New Course',Category:'English',Duration:'0m',Price:999,MRP:1999});crs()}
+async function ord(){const o=Object.values(await A('GET','/api/admin/orders')||{});$('mn').innerHTML='<h2>Orders</h2><div class=cd><table><tr><th>Date<th>Amount<th>Status</tr>'+o.map(x=>`<tr><td>${new Date(x.At*1000).toLocaleString()}<td>${R(x.Amount)}<td>${x.Paid?'✅ Paid':'⏳ Pending'}</tr>`).join('')+'</table></div>'}
+async function stu(){U=await A('GET','/api/admin/students');$('mn').innerHTML='<h2>Customers ('+Object.keys(U).length+') / Newsletter</h2><div class=cd><small>Kisi ko tick nahi kiya to SAB ko jaayega</small><br>'+Object.values(U).map(u=>`<label><input type=checkbox style="width:auto" class=sel value="${u.ID}"> ${u.Name||'-'} | ${u.Phone||''} | ${u.Email||''}</label><br>`).join('')+'</div><div class=cd><select id=ch><option value=whatsapp>WhatsApp</option><option value=email>Email</option></select><input id=sb2 placeholder="Subject (email)"><textarea id=ms rows=4 placeholder="Message"></textarea><button onclick=snd()>Send</button></div>'}
+async function snd(){const ids=[...document.querySelectorAll('.sel:checked')].map(x=>x.value);const r=await A('POST','/api/admin/broadcast',{Channel:$('ch').value,Subject:$('sb2').value,Message:$('ms').value,UserIDs:ids});alert('Queued: '+r.queued)}
+async function liv(){const l=await (await fetch('/api/live',{headers:{}})).json().catch(()=>[]);$('mn').innerHTML='<h2>Live Classes</h2><div class=cd><input id=lt placeholder="Class title"><input id=la placeholder="Kab? (Today 7:00 PM)"><input id=ll placeholder="Zoom / Meet / YouTube Live link"><button onclick=addl()>Add class</button></div>'+(l||[]).map(x=>`<div class=cd><b>${x.Title}</b> <small>${x.At}</small><br><small>${x.Link}</small><br><button onclick="dl('${x.ID}')">Delete</button></div>`).join('')}
+async function addl(){await A('POST','/api/admin/live',{Title:$('lt').value,At:$('la').value,Link:$('ll').value});liv()}
+async function dl(i){await A('POST','/api/admin/live/'+i+'/delete');liv()}
+async function rev(){const l=await A('GET','/api/admin/reviews');$('mn').innerHTML='<h2>Reviews</h2>'+((l||[]).map(r=>`<div class=cd><b>${r.Name}</b> ⭐${r.Stars}<br>${r.Text}<br>${r.Approved?'✅ Approved':`<button onclick="ap('${r.ID}')">Approve</button>`}</div>`).join('')||'<div class=cd>No reviews</div>')}
+async function ap(i){await A('POST','/api/admin/reviews/'+i+'/approve');rev()}
+const F=[['rz_key_id','Razorpay Key ID'],['rz_key_secret','Razorpay Key Secret'],['smtp_host','SMTP host'],['smtp_port','SMTP port'],['smtp_user','SMTP email'],['smtp_pass','SMTP app password'],['wa_url','WhatsApp API URL'],['wa_token','WhatsApp API token']];
+function set(){$('mn').innerHTML='<h2>API Keys / Settings</h2><div class=cd>'+F.map(f=>`<label>${f[1]}<input id=${f[0]} type=password></label>`).join('')+'<button onclick=ss()>Save</button><br><small>Sirf wahi bharo jo badalna hai.</small></div>'}
+async function ss(){const b={};F.forEach(f=>{if($(f[0]).value)b[f[0]]=$(f[0]).value});await A('PUT','/api/admin/settings',b);alert('Saved')}
+</script>
