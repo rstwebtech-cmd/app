@@ -15,6 +15,8 @@ jobs:
       - uses: subosito/flutter-action@v2
         with: { channel: stable }
       - run: cd app && flutter create . --platforms=android,web && flutter pub get
+      - name: Add internet permission
+        run: sed -i 's#<application#<uses-permission android:name="android.permission.INTERNET"/>\n    <application#' app/android/app/src/main/AndroidManifest.xml && grep -n INTERNET app/android/app/src/main/AndroidManifest.xml
       - run: cd app && flutter build web --release --dart-define=API=${{ github.event.inputs.api_url }}
       - run: cd app && flutter build apk --release --dart-define=API=${{ github.event.inputs.api_url }}
       - uses: actions/upload-artifact@v4

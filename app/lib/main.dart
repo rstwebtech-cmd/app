@@ -16,10 +16,15 @@ Future buy(BuildContext c, String id) async {
 }
 Map me = {};
 Future api(String m, String p, [Map? b]) async {
-  final h = {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'};
-  final u = Uri.parse(base + p);
-  final r = m == 'GET' ? await http.get(u, headers: h) : await http.post(u, headers: h, body: jsonEncode(b ?? {}));
-  return jsonDecode(r.body);
+  try {
+    final h = {'Content-Type': 'application/json', 'Authorization': 'Bearer $token'};
+    final u = Uri.parse(base + p);
+    final f = m == 'GET' ? http.get(u, headers: h) : http.post(u, headers: h, body: jsonEncode(b ?? {}));
+    final r = await f.timeout(const Duration(seconds: 70));
+    return jsonDecode(r.body);
+  } catch (e) {
+    return {'error': 'Server se connect nahi ho paaya. Internet check karo ya thodi der baad try karo.'};
+  }
 }
 
 void main() => runApp(MaterialApp(
@@ -51,7 +56,7 @@ class _L extends State<Login> {
             if (sent) TextField(controller: otp, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'OTP')),
             const SizedBox(height: 12),
             FilledButton(onPressed: () async {
-              if (!sent) { await api('POST', '/api/auth/otp/send', {'phone': ph.text}); setState(() => sent = true); }
+              if (!sent) { final r = await api('POST', '/api/auth/otp/send', {'phone': ph.text}); if (r['status'] == 'sent') { setState(() => sent = true); } else { snack(context, r['error'] ?? 'OTP nahi gaya'); } }
               else { done(await api('POST', '/api/auth/otp/verify', {'phone': ph.text, 'code': otp.text, 'name': nm.text})); }
             }, child: Text(sent ? 'Verify OTP' : 'Send OTP')),
             OutlinedButton.icon(icon: const Icon(Icons.g_mobiledata, size: 30), label: const Text('Continue with Google'), onPressed: () async {
@@ -203,7 +208,7 @@ class HomeTab extends StatelessWidget {
               const Spacer(),
               const Text('Dream Big...', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
               const Text('Learn Beyond Limits!', style: TextStyle(color: _gold, fontSize: 22, fontWeight: FontWeight.bold)),
-              Text('Hello, $nm 👋 · v3', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 8),
+              Text('Hello, $nm 👋 · v4', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 8),
               FilledButton(style: FilledButton.styleFrom(backgroundColor: _gold, foregroundColor: Colors.black), onPressed: () => jump(1), child: const Text('Explore Courses →'))])))])),
           Padding(padding: const EdgeInsets.all(14), child: TextField(decoration: InputDecoration(hintText: 'Search courses, quizzes, or topics...', prefixIcon: const Icon(Icons.search), filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(30), borderSide: BorderSide.none)), onSubmitted: (v) => page(c, 'Search: $v', Courses(q: v)))),
           SingleChildScrollView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 8), child: Row(children: [
