@@ -12,6 +12,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
+	"encoding/base64"
 	"log"
 	"math/big"
 	"net/http"
@@ -22,7 +24,7 @@ import (
 )
 
 type User struct {
-	ID, Name, Phone, Email string
+	ID, Name, Phone, Email, Level, Roll string
 	Courses                []string
 }
 type Course struct {
@@ -30,6 +32,7 @@ type Course struct {
 	Price, MRP                    int
 	OfferLabel                    string // e.g. "Diwali Sale"
 	OfferEnds                     string // RFC3339, app shows countdown
+	Lessons []Lesson
 }
 type Combo struct {
 	ID, Title string
@@ -57,9 +60,24 @@ type Order struct {
 	Amount           int
 	Paid             bool
 	At               int64
+	Coupon           string
 }
 type Live struct{ ID, Title, At, Link string }
-type Cert struct{ ID, UserName, CourseTitle, Date string }
+type Lesson struct {
+	Title, URL string
+	Free       bool
+}
+type Coupon struct {
+	Code                           string
+	Percent, Flat, MaxUses, Used   int
+	Expires                        string
+	Active                         bool
+}
+type File struct {
+	Type string
+	Data []byte
+}
+type Cert struct{ ID, UserName, CourseTitle, Date, Roll string }
 type DB struct {
 	Users    map[string]*User
 	Courses  []Course
@@ -71,11 +89,15 @@ type DB struct {
 	Certs    map[string]Cert
 	Orders   map[string]*Order
 	Lives    []Live
+	Coupons  []Coupon
+	Creds    map[string]string
+	Sessions map[string]string
+	Files    map[string]File `json:"-"`
 	Settings map[string]string // smtp_host,smtp_port,smtp_user,smtp_pass,wa_url,wa_token
 }
 
 var (
-	db       = &DB{Users: map[string]*User{}, Quizzes: map[string][]Q{}, Certs: map[string]Cert{}, Orders: map[string]*Order{}, Settings: map[string]string{}}
+	db       = &DB{Users: map[string]*User{}, Quizzes: map[string][]Q{}, Certs: map[string]Cert{}, Orders: map[string]*Order{}, Creds: map[string]string{}, Files: map[string]File{}, Sessions: sessions, Settings: map[string]string{}}
 	mu       sync.Mutex
 	sessions = map[string]string{}
 	otps     = map[string]string{}
@@ -84,13 +106,137 @@ var (
 //go:embed static
 var staticFS embed.FS
 
+//go:embed checkout.html
+var checkoutHTML []byte
+
+//go:embed embed.js
+var embedJS []byte
+
 //go:embed admin.html
 var adminHTML []byte
 
-func save() { b, _ := json.MarshalIndent(db, "", " "); os.WriteFile("data.json", b, 0644) }
+func rest(cmd ...any) json.RawMessage {
+	u, t := os.Getenv("STORE_URL"), os.Getenv("STORE_TOKEN")
+	if u == "" {
+		return nil
+	}
+	b, _ := json.Marshal(cmd)
+	req, _ := http.NewRequest("POST", u, bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer "+t)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var o struct{ Result json.RawMessage }
+	json.NewDecoder(resp.Body).Decode(&o)
+	return o.Result
+}
+func save() {
+	b, _ := json.Marshal(db)
+	os.WriteFile("data.json", b, 0644)
+	rest("SET", "jp:data", string(b))
+}
+func fileGet(id string) (File, bool) {
+	if f, ok := db.Files[id]; ok {
+		return f, true
+	}
+	var sv string
+	if json.Unmarshal(rest("GET", "jp:f:"+id), &sv) == nil && sv != "" {
+		if i := strings.Index(sv, "|"); i > 0 {
+			if d, err := base64.StdEncoding.DecodeString(sv[i+1:]); err == nil {
+				f := File{sv[:i], d}
+				db.Files[id] = f
+				return f, true
+			}
+		}
+	}
+	return File{}, false
+}
+func hashPw(salt, pw string) string {
+	h := sha256.Sum256([]byte(salt + pw))
+	return salt + "$" + hex.EncodeToString(h[:])
+}
+func userByEmail(e string) *User {
+	for _, u := range db.Users {
+		if strings.EqualFold(u.Email, e) {
+			return u
+		}
+	}
+	return nil
+}
+func price(item, code string) (int, string) {
+	amt := 0
+	for _, c := range db.Courses {
+		if c.ID == item {
+			amt = c.Price
+		}
+	}
+	for _, c := range db.Combos {
+		if c.ID == item {
+			amt = c.Price
+		}
+	}
+	if amt > 0 && code != "" {
+		for i := range db.Coupons {
+			c := &db.Coupons[i]
+			if strings.EqualFold(c.Code, code) && c.Active && (c.MaxUses == 0 || c.Used < c.MaxUses) && (c.Expires == "" || c.Expires >= time.Now().Format("2006-01-02")) {
+				d := amt*c.Percent/100 + c.Flat
+				if d > amt-1 {
+					d = amt - 1
+				}
+				return amt - d, c.Code
+			}
+		}
+	}
+	return amt, ""
+}
+func pubCourses() []Course {
+	out := make([]Course, len(db.Courses))
+	copy(out, db.Courses)
+	for i := range out {
+		out[i].Lessons = nil
+	}
+	return out
+}
+func fix() {
+	if db.Users == nil {
+		db.Users = map[string]*User{}
+	}
+	if db.Quizzes == nil {
+		db.Quizzes = map[string][]Q{}
+	}
+	if db.Certs == nil {
+		db.Certs = map[string]Cert{}
+	}
+	if db.Settings == nil {
+		db.Settings = map[string]string{}
+	}
+	if db.Orders == nil {
+		db.Orders = map[string]*Order{}
+	}
+	if db.Creds == nil {
+		db.Creds = map[string]string{}
+	}
+	if db.Files == nil {
+		db.Files = map[string]File{}
+	}
+	if db.Sessions == nil {
+		db.Sessions = map[string]string{}
+	}
+	sessions = db.Sessions
+}
 func load() {
-	if b, err := os.ReadFile("data.json"); err == nil {
-		json.Unmarshal(b, db)
+	var raw []byte
+	var sv string
+	if json.Unmarshal(rest("GET", "jp:data"), &sv) == nil && sv != "" {
+		raw = []byte(sv)
+	} else if b, err := os.ReadFile("data.json"); err == nil {
+		raw = b
+	}
+	if len(raw) > 0 {
+		json.Unmarshal(raw, db)
+		fix()
 		return
 	}
 	for i, c := range []Course{
@@ -118,6 +264,7 @@ func load() {
 	}
 	db.Combos = []Combo{{"b1", "Spoken English + Accent Training", []string{"c1", "c5"}, 29999, 17999}}
 	db.Groups = []Group{{"g1", "Janhavi Community", "admin"}}
+	db.Quizzes["level"] = []Q{{"I ___ a student.", []string{"am", "is", "are"}, 0}, {"She ___ to school every day.", []string{"go", "goes", "going"}, 1}, {"They ___ playing now.", []string{"is", "are", "was"}, 1}, {"I have lived here ___ 2010.", []string{"for", "since", "from"}, 1}, {"If it rains, we ___ stay home.", []string{"will", "would", "did"}, 0}, {"He asked me where I ___.", []string{"live", "lived", "living"}, 1}, {"The report ___ by tomorrow.", []string{"will be finished", "finishes", "is finishing"}, 0}, {"Had I known, I ___ come.", []string{"would have", "will", "had"}, 0}, {"She is ___ than her sister.", []string{"tall", "taller", "tallest"}, 1}, {"Hardly ___ arrived when it began to rain.", []string{"had he", "he had", "did he"}, 0}}
 }
 
 func rid() string { b := make([]byte, 8); rand.Read(b); return hex.EncodeToString(b) }
@@ -134,13 +281,17 @@ func guard(admin bool, f func(http.ResponseWriter, *http.Request, *User)) http.H
 	return func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
-		defer save()
+		defer func() {
+			if r.Method != "GET" {
+				save()
+			}
+		}()
 		if admin && r.Header.Get("X-Admin-Key") != os.Getenv("ADMIN_KEY") {
 			http.Error(w, `{"error":"admin only"}`, 403)
 			return
 		}
 		u := me(r)
-		if !admin && u == nil && r.URL.Path != "/api/courses" && r.URL.Path != "/api/combos" && r.URL.Path != "/api/live" && r.URL.Path != "/api/reviews" && r.URL.Path != "/api/auth/otp/send" && r.URL.Path != "/api/auth/otp/verify" && r.URL.Path != "/api/auth/google" {
+		if !admin && u == nil && r.URL.Path != "/api/courses" && r.URL.Path != "/api/combos" && r.URL.Path != "/api/live" && r.URL.Path != "/api/reviews" && r.URL.Path != "/api/auth/otp/send" && r.URL.Path != "/api/auth/otp/verify" && r.URL.Path != "/api/auth/google" && r.URL.Path != "/api/auth/register" && r.URL.Path != "/api/auth/login" {
 			http.Error(w, `{"error":"login required"}`, 401)
 			return
 		}
@@ -158,7 +309,7 @@ func findUser(phone, email, name string) *User {
 			return u
 		}
 	}
-	u := &User{ID: rid(), Name: name, Phone: phone, Email: email}
+	u := &User{ID: rid(), Name: name, Phone: phone, Email: email, Roll: fmt.Sprintf("JP%05d", len(db.Users)+1)}
 	db.Users[u.ID] = u
 	return u
 }
@@ -221,7 +372,7 @@ func main() {
 		login(w, findUser("", g.Email, g.Name))
 	}))
 	// ---- catalogue ----
-	m.HandleFunc("GET /api/courses", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) { jw(w, db.Courses) }))
+	m.HandleFunc("GET /api/courses", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) { jw(w, pubCourses()) }))
 	m.HandleFunc("GET /api/combos", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) { jw(w, db.Combos) }))
 	m.HandleFunc("GET /api/me", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
 		var cs []Cert
@@ -258,7 +409,11 @@ func main() {
 		db.Groups = append(db.Groups, g)
 		jw(w, g)
 	}))
-	m.HandleFunc("GET /api/chat", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) {
+	m.HandleFunc("GET /api/chat", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
+		if rm := r.URL.Query().Get("room"); strings.HasPrefix(rm, "support-") && rm != "support-"+u.ID {
+			http.Error(w, `{"error":"not allowed"}`, 403)
+			return
+		}
 		after := 0
 		fmt.Sscan(r.URL.Query().Get("after"), &after)
 		out := []Msg{}
@@ -272,6 +427,10 @@ func main() {
 	m.HandleFunc("POST /api/chat", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
 		var x Msg
 		in(r, &x)
+		if strings.HasPrefix(x.Room, "support-") && x.Room != "support-"+u.ID {
+			http.Error(w, `{"error":"not allowed"}`, 403)
+			return
+		}
 		x.ID, x.Name, x.At = len(db.Msgs)+1, u.Name, time.Now().Unix()
 		db.Msgs = append(db.Msgs, x)
 		jw(w, x)
@@ -291,6 +450,17 @@ func main() {
 		}
 		pass := len(qs) > 0 && score*100/len(qs) >= 60
 		res := map[string]any{"score": score, "total": len(qs), "passed": pass}
+		if r.PathValue("id") == "level" {
+			lv := []string{"A1", "A1", "A2", "A2", "B1", "B1", "B2", "B2", "C1", "C1", "C1"}
+			i := score
+			if i >= len(lv) {
+				i = len(lv) - 1
+			}
+			u.Level = lv[i]
+			res["level"] = u.Level
+			jw(w, res)
+			return
+		}
 		if pass {
 			title := ""
 			for _, c := range db.Courses {
@@ -298,7 +468,7 @@ func main() {
 					title = c.Title
 				}
 			}
-			c := Cert{rid(), u.Name, title, time.Now().Format("02 Jan 2006")}
+			c := Cert{rid(), u.Name, title, time.Now().Format("02 Jan 2006"), fmt.Sprintf("JP-%d-%04d", time.Now().Year(), len(db.Certs)+1)}
 			db.Certs[c.ID] = c
 			res["certificate"] = c.ID
 		}
@@ -312,8 +482,11 @@ func main() {
 			http.NotFound(w, r)
 			return
 		}
-		fmt.Fprintf(w, `<body style="font-family:Georgia;text-align:center;border:12px double #6a1b9a;padding:60px;margin:30px"><h1>Certificate of Completion</h1><p>This certifies that</p><h2>%s</h2><p>has successfully completed</p><h2>%s</h2><p>%s &middot; ID %s</p><p><b>Janhavi Panwar &mdash; Wonder Girl of India</b></p></body>`,
-			html.EscapeString(c.UserName), html.EscapeString(c.CourseTitle), c.Date, c.ID)
+		signer := db.Settings["cert_signer"]
+		if signer == "" {
+			signer = "Janhavi Panwar"
+		}
+		fmt.Fprintf(w, `<meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><style>body{margin:0;background:#f5f3ff;font-family:Georgia,serif}.c{max-width:820px;margin:20px auto;background:#fff;border:14px double #6d28d9;padding:40px;text-align:center}h1{color:#2e1065;letter-spacing:3px;margin:8px 0}h2{color:#6d28d9;font-size:34px;margin:10px 0}.g{color:#b45309}.r{display:flex;justify-content:space-between;margin-top:40px;font-size:14px;color:#444}@media print{button{display:none}body{background:#fff}}</style><div class=c><img src="/static/logo.png" height=50><h1>CERTIFICATE OF COMPLETION</h1><p>This is to certify that</p><h2>%s</h2><p>has successfully completed the course</p><h2 class=g>%s</h2><div class=r><span>Roll No: <b>%s</b></span><span>Date: %s</span><span><b>%s</b><br>Wonder Girl of India</span></div><p style="font-size:11px;color:#999">Certificate ID: %s</p></div><center><button onclick=print()>Download / Print</button></center>`, html.EscapeString(c.UserName), html.EscapeString(c.CourseTitle), c.Roll, c.Date, html.EscapeString(signer), c.ID)
 	})
 	// ---- ADMIN (header X-Admin-Key) ----
 	m.HandleFunc("GET /api/admin/reviews", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) { jw(w, db.Reviews) }))
@@ -385,19 +558,9 @@ func main() {
 	}))
 	// ---- Razorpay ----
 	m.HandleFunc("POST /api/pay/order", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
-		var b struct{ ItemID string }
+		var b struct{ ItemID, Coupon string }
 		in(r, &b)
-		amt := 0
-		for _, c := range db.Courses {
-			if c.ID == b.ItemID {
-				amt = c.Price
-			}
-		}
-		for _, c := range db.Combos {
-			if c.ID == b.ItemID {
-				amt = c.Price
-			}
-		}
+		amt, cc := price(b.ItemID, b.Coupon)
 		st := db.Settings
 		if amt == 0 || st["rz_key_id"] == "" {
 			http.Error(w, `{"error":"payment not configured in admin settings"}`, 400)
@@ -415,7 +578,7 @@ func main() {
 			http.Error(w, `{"error":"razorpay order failed - check keys"}`, 502)
 			return
 		}
-		db.Orders[o.ID] = &Order{o.ID, u.ID, b.ItemID, amt, false, time.Now().Unix()}
+		db.Orders[o.ID] = &Order{o.ID, u.ID, b.ItemID, amt, false, time.Now().Unix(), cc}
 		sch := "https"
 		if strings.HasPrefix(r.Host, "localhost") {
 			sch = "http"
@@ -446,6 +609,11 @@ func main() {
 			return
 		}
 		o.Paid = true
+		for i := range db.Coupons {
+			if o.Coupon != "" && db.Coupons[i].Code == o.Coupon {
+				db.Coupons[i].Used++
+			}
+		}
 		items := []string{o.Item}
 		for _, c := range db.Combos {
 			if c.ID == o.Item {
@@ -520,6 +688,197 @@ func main() {
 			}
 		}
 		jw(w, map[string]any{"revenue": rev, "orders": paid, "customers": len(db.Users), "pending": pend, "labels": labels, "values": vals, "top": tops, "reviewsPending": rp})
+	}))
+	m.HandleFunc("POST /api/auth/register", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		var b struct{ Name, Email, Phone, Password string }
+		in(r, &b)
+		e := strings.ToLower(strings.TrimSpace(b.Email))
+		if e == "" || b.Name == "" || len(b.Password) < 6 {
+			http.Error(w, `{"error":"naam, email aur 6+ akshar ka password zaruri hai"}`, 400)
+			return
+		}
+		if db.Creds[e] != "" {
+			http.Error(w, `{"error":"is email se account pehle se hai, login karo"}`, 400)
+			return
+		}
+		db.Creds[e] = hashPw(rid(), b.Password)
+		u := userByEmail(e)
+		if u == nil {
+			u = &User{ID: rid(), Email: e, Roll: fmt.Sprintf("JP%05d", len(db.Users)+1)}
+			db.Users[u.ID] = u
+		}
+		u.Name, u.Phone = b.Name, b.Phone
+		login(w, u)
+	}))
+	m.HandleFunc("POST /api/auth/login", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		var b struct{ Email, Password string }
+		in(r, &b)
+		e := strings.ToLower(strings.TrimSpace(b.Email))
+		st := db.Creds[e]
+		p := strings.SplitN(st, "$", 2)
+		u := userByEmail(e)
+		if st == "" || u == nil || hashPw(p[0], b.Password) != st {
+			http.Error(w, `{"error":"email ya password galat hai"}`, 401)
+			return
+		}
+		login(w, u)
+	}))
+	m.HandleFunc("POST /api/coupon/validate", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		var b struct{ ItemID, Code string }
+		in(r, &b)
+		orig, _ := price(b.ItemID, "")
+		amt, cc := price(b.ItemID, b.Code)
+		jw(w, map[string]any{"original": orig, "price": amt, "valid": cc != ""})
+	}))
+	m.HandleFunc("GET /api/course/{id}/lessons", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
+		en := contains(u.Courses, r.PathValue("id"))
+		out := []Lesson{}
+		for _, c := range db.Courses {
+			if c.ID == r.PathValue("id") {
+				for _, l := range c.Lessons {
+					if !en && !l.Free {
+						l.URL = ""
+					}
+					out = append(out, l)
+				}
+			}
+		}
+		jw(w, out)
+	}))
+	m.HandleFunc("GET /files/{id}", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		f, ok := fileGet(r.PathValue("id"))
+		mu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", f.Type)
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		w.Write(f.Data)
+	})
+	m.HandleFunc("GET /embed.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		w.Write(embedJS)
+	})
+	m.HandleFunc("GET /checkout/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(checkoutHTML)
+	})
+	m.HandleFunc("GET /api/admin/courses", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) { jw(w, db.Courses) }))
+	m.HandleFunc("POST /api/admin/courses/import", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		var l []Course
+		in(r, &l)
+		for _, c := range l {
+			c.ID = rid()
+			db.Courses = append(db.Courses, c)
+		}
+		jw(w, map[string]int{"imported": len(l)})
+	}))
+	m.HandleFunc("POST /api/admin/upload", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		r.ParseMultipartForm(2 << 20)
+		f, h, err := r.FormFile("file")
+		if err != nil {
+			http.Error(w, `{"error":"file nahi mili"}`, 400)
+			return
+		}
+		defer f.Close()
+		ct := h.Header.Get("Content-Type")
+		d, _ := io.ReadAll(io.LimitReader(f, 700<<10))
+		if !(strings.HasPrefix(ct, "image/") || ct == "application/pdf") || len(d) >= 700<<10 {
+			http.Error(w, `{"error":"sirf image/pdf, 700KB se chhoti"}`, 400)
+			return
+		}
+		id := rid()
+		db.Files[id] = File{ct, d}
+		rest("SET", "jp:f:"+id, ct+"|"+base64.StdEncoding.EncodeToString(d))
+		jw(w, map[string]string{"url": "/files/" + id})
+	}))
+	m.HandleFunc("GET /api/admin/coupons", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) { jw(w, db.Coupons) }))
+	m.HandleFunc("POST /api/admin/coupons", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		var c Coupon
+		in(r, &c)
+		for i := range db.Coupons {
+			if db.Coupons[i].Code == c.Code {
+				c.Used = db.Coupons[i].Used
+				db.Coupons[i] = c
+				jw(w, c)
+				return
+			}
+		}
+		db.Coupons = append(db.Coupons, c)
+		jw(w, c)
+	}))
+	m.HandleFunc("POST /api/admin/coupons/{code}/delete", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		for i, c := range db.Coupons {
+			if c.Code == r.PathValue("code") {
+				db.Coupons = append(db.Coupons[:i], db.Coupons[i+1:]...)
+				break
+			}
+		}
+		jw(w, "ok")
+	}))
+	m.HandleFunc("POST /api/admin/combos/{id}/delete", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		for i, c := range db.Combos {
+			if c.ID == r.PathValue("id") {
+				db.Combos = append(db.Combos[:i], db.Combos[i+1:]...)
+				break
+			}
+		}
+		jw(w, "ok")
+	}))
+	m.HandleFunc("GET /api/admin/chat/rooms", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		type R struct {
+			Room, Last, Name string
+			At               int64
+		}
+		rooms := map[string]*R{}
+		for _, x := range db.Msgs {
+			if strings.HasPrefix(x.Room, "support-") {
+				rr := rooms[x.Room]
+				if rr == nil {
+					rr = &R{Room: x.Room}
+					rooms[x.Room] = rr
+				}
+				rr.Last, rr.At = x.Text, x.At
+				if x.Name != "Janhavi Team" {
+					rr.Name = x.Name
+				}
+			}
+		}
+		out := []*R{}
+		for _, v := range rooms {
+			out = append(out, v)
+		}
+		sort.Slice(out, func(a, b int) bool { return out[a].At > out[b].At })
+		jw(w, out)
+	}))
+	m.HandleFunc("GET /api/admin/chat", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		out := []Msg{}
+		for _, x := range db.Msgs {
+			if x.Room == r.URL.Query().Get("room") {
+				out = append(out, x)
+			}
+		}
+		jw(w, out)
+	}))
+	m.HandleFunc("POST /api/admin/chat", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		var x Msg
+		in(r, &x)
+		x.ID, x.Name, x.At = len(db.Msgs)+1, "Janhavi Team", time.Now().Unix()
+		db.Msgs = append(db.Msgs, x)
+		jw(w, x)
+	}))
+	m.HandleFunc("GET /api/admin/backup", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) { jw(w, db) }))
+	m.HandleFunc("POST /api/admin/restore", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		var n DB
+		if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+			http.Error(w, `{"error":"bad file"}`, 400)
+			return
+		}
+		db = &n
+		fix()
+		jw(w, "restored")
 	}))
 	port := os.Getenv("PORT")
 	if port == "" {

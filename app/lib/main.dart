@@ -9,8 +9,8 @@ const base = String.fromEnvironment('API', defaultValue: 'http://10.0.2.2:8080')
 const photo = '$base/static/janhavi.png';
 const logo = '$base/static/logo.png';
 String token = '';
-Future buy(BuildContext c, String id) async {
-  final r = await api('POST', '/api/pay/order', {'itemId': id});
+Future buy(BuildContext c, String id, [String coupon = '']) async {
+  final r = await api('POST', '/api/pay/order', {'itemId': id, 'coupon': coupon});
   if (r['url'] == null) return snack(c, r['error'] ?? 'Payment error');
   await launchUrl(Uri.parse(r['url']), mode: LaunchMode.externalApplication);
 }
@@ -37,33 +37,35 @@ void snack(BuildContext c, String s) => ScaffoldMessenger.of(c).showSnackBar(Sna
 
 class Login extends StatefulWidget { const Login({super.key}); @override State<Login> createState() => _L(); }
 class _L extends State<Login> {
-  final ph = TextEditingController(), otp = TextEditingController(), nm = TextEditingController();
-  bool sent = false;
+  final nm = TextEditingController(), ph = TextEditingController(), em = TextEditingController(), pw = TextEditingController();
+  bool reg = false, busy = false;
   void done(r) {
+    setState(() => busy = false);
     if (r['token'] == null) return snack(context, r['error'] ?? 'Failed');
     token = r['token']; me = r['user'];
     Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const Home()));
   }
+  Widget f(TextEditingController c, String l, {bool pass = false, TextInputType? t}) => TextField(controller: c, obscureText: pass, keyboardType: t, decoration: InputDecoration(labelText: l));
   @override Widget build(BuildContext c) => Scaffold(
         body: Container(
           decoration: const BoxDecoration(gradient: LinearGradient(colors: [Color(0xFF2E1065), Color(0xFF7C3AED)], begin: Alignment.topCenter, end: Alignment.bottomCenter)),
-          child: Center(child: Card(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)), margin: const EdgeInsets.all(24), child: Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, children: [
-            CircleAvatar(radius: 50, backgroundColor: const Color(0xFFEDE9FE), backgroundImage: const NetworkImage(photo), onBackgroundImageError: (_, __) {}), const SizedBox(height: 8),
-            const Text('Janhavi Panwar', style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
-            const Text('Wonder Girl of India'), const SizedBox(height: 16),
-            TextField(controller: nm, decoration: const InputDecoration(labelText: 'Name')),
-            TextField(controller: ph, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Mobile (+91...)')),
-            if (sent) TextField(controller: otp, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'OTP')),
-            const SizedBox(height: 12),
-            FilledButton(onPressed: () async {
-              if (!sent) { final r = await api('POST', '/api/auth/otp/send', {'phone': ph.text}); if (r['status'] == 'sent') { setState(() => sent = true); } else { snack(context, r['error'] ?? 'OTP nahi gaya'); } }
-              else { done(await api('POST', '/api/auth/otp/verify', {'phone': ph.text, 'code': otp.text, 'name': nm.text})); }
-            }, child: Text(sent ? 'Verify OTP' : 'Send OTP')),
+          child: Center(child: SingleChildScrollView(child: Card(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)), margin: const EdgeInsets.all(24), child: Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, children: [
+            CircleAvatar(radius: 46, backgroundColor: const Color(0xFFEDE9FE), backgroundImage: const NetworkImage(photo), onBackgroundImageError: (_, __) {}), const SizedBox(height: 8),
+            const Text('Janhavi Panwar', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)), const Text('Wonder Girl of India'), const SizedBox(height: 12),
+            if (reg) f(nm, 'Pura naam'),
+            f(em, 'Email', t: TextInputType.emailAddress),
+            if (reg) f(ph, 'Mobile number', t: TextInputType.phone),
+            f(pw, 'Password (6+ akshar)', pass: true), const SizedBox(height: 12),
+            SizedBox(width: double.infinity, child: FilledButton(onPressed: busy ? null : () async {
+              setState(() => busy = true);
+              done(reg ? await api('POST', '/api/auth/register', {'name': nm.text, 'email': em.text, 'phone': ph.text, 'password': pw.text}) : await api('POST', '/api/auth/login', {'email': em.text, 'password': pw.text}));
+            }, child: Text(busy ? 'Please wait...' : reg ? 'Create Account' : 'Login'))),
+            TextButton(onPressed: () => setState(() => reg = !reg), child: Text(reg ? 'Account hai? Login karo' : 'Naya account banao')),
             OutlinedButton.icon(icon: const Icon(Icons.g_mobiledata, size: 30), label: const Text('Continue with Google'), onPressed: () async {
               final a = await (await GoogleSignIn(scopes: ['email']).signIn())?.authentication;
               if (a?.idToken != null) done(await api('POST', '/api/auth/google', {'idToken': a!.idToken}));
             }),
-          ])))),
+          ]))))),
         ),
       );
 }
@@ -93,7 +95,7 @@ class _P extends State<Pulse> with SingleTickerProviderStateMixin {
   @override void dispose() { a.dispose(); super.dispose(); }
   @override Widget build(BuildContext c) => ScaleTransition(scale: Tween(begin: 0.92, end: 1.08).animate(a), child: widget.child);
 }
-Widget cimg(Map k, double h) => ClipRRect(borderRadius: BorderRadius.circular(14), child: (k['Image'] ?? '').toString().isEmpty ? Container(height: h, width: double.infinity, color: const Color(0xFFDDD6FE), child: const Icon(Icons.menu_book, size: 36, color: Color(0xFF6D28D9))) : Image.network(base + k['Image'], height: h, width: double.infinity, fit: BoxFit.cover, errorBuilder: (_, __, ___) => Container(height: h, color: const Color(0xFFDDD6FE))));
+Widget cimg(Map k, double h) => ClipRRect(borderRadius: BorderRadius.circular(14), child: (k['Image'] ?? '').toString().isEmpty ? Container(height: h, width: double.infinity, color: const Color(0xFFDDD6FE), child: const Icon(Icons.menu_book, size: 36, color: Color(0xFF6D28D9))) : Image.network(k['Image'].toString().startsWith('http') ? k['Image'] : base + k['Image'], height: h, width: double.infinity, fit: BoxFit.cover, errorBuilder: (_, __, ___) => Container(height: h, color: const Color(0xFFDDD6FE))));
 Widget priceRow(num p, num mrp) => Wrap(crossAxisAlignment: WrapCrossAlignment.center, spacing: 4, children: [
       Text('₹$p', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.green)), const SizedBox(width: 8),
       Text('₹$mrp', style: const TextStyle(decoration: TextDecoration.lineThrough, color: Colors.grey)), const SizedBox(width: 8),
@@ -124,13 +126,15 @@ class _Cs extends State<Courses> {
 
 class CourseScreen extends StatefulWidget { final Map k; const CourseScreen(this.k, {super.key}); @override State<CourseScreen> createState() => _C(); }
 class _C extends State<CourseScreen> {
-  final rv = TextEditingController();
+  final rv = TextEditingController(), cp = TextEditingController();
   @override Widget build(BuildContext c) {
     final k = widget.k;
     return Scaffold(appBar: AppBar(title: Text(k['Title'])), body: ListView(padding: const EdgeInsets.all(16), children: [
       cimg(k, 190), const SizedBox(height: 10), Text('${k['Category']} · ${k['Duration']}'), priceRow(k['Price'], k['MRP']), const SizedBox(height: 12),
-      FilledButton(onPressed: () => buy(c, k['ID']), child: Text('Buy Now ₹${k['Price']}')),
+      TextField(controller: cp, decoration: const InputDecoration(labelText: 'Coupon code (agar hai)')), FilledButton(onPressed: () => buy(c, k['ID'], cp.text.trim()), child: Text('Buy Now ₹${k['Price']}')),
       OutlinedButton(onPressed: () => go(c, Quiz(k)), child: const Text('Take Final Quiz → Get Certificate')),
+      const Divider(), const Text('Lessons', style: TextStyle(fontWeight: FontWeight.bold)),
+      FutureBuilder(future: api('GET', '/api/course/${k['ID']}/lessons'), builder: (_, s) { final l = s.data is List ? s.data as List : []; if (l.isEmpty) return const Padding(padding: EdgeInsets.all(8), child: Text('Lessons jald add honge')); return Column(children: [for (final x in l) ListTile(leading: Icon((x['URL'] ?? '').toString().isEmpty ? Icons.lock : Icons.play_circle, color: _blue), title: Text(x['Title']), onTap: () { if ((x['URL'] ?? '').toString().isEmpty) { snack(c, 'Course kharidne ke baad khulega'); } else { launchUrl(Uri.parse(x['URL']), mode: LaunchMode.externalApplication); } })]); }),
       const Divider(), const Text('Reviews', style: TextStyle(fontWeight: FontWeight.bold)),
       FutureBuilder(future: api('GET', '/api/reviews'), builder: (_, s) => Column(children: [
         for (final r in (s.data as List? ?? [])) ListTile(title: Text(r['Name']), subtitle: Text(r['Text']), trailing: Text('⭐${r['Stars']}'))])),
@@ -180,7 +184,7 @@ class _Q extends State<Quiz> {
         FilledButton(onPressed: () async {
           final r = await api('POST', '/api/quiz/${widget.k['ID']}', {'answers': [for (var i = 0; i < qs.length; i++) a[i] ?? -1]});
           if (!mounted) return;
-          showDialog(context: c, builder: (_) => AlertDialog(title: Text(r['passed'] ? '🎉 Passed ${r['score']}/${r['total']}' : 'Score ${r['score']}/${r['total']} - try again'),
+          showDialog(context: c, builder: (_) => r['level'] != null ? AlertDialog(title: Text('Your Level: ${r['level']} 🎯'), content: Text('Score ${r['score']}/${r['total']}')) : AlertDialog(title: Text(r['passed'] ? '🎉 Passed ${r['score']}/${r['total']}' : 'Score ${r['score']}/${r['total']} - try again'),
               content: Text(r['passed'] ? 'Certificate: $base/certificate/${r['certificate']}' : 'Need 60% to pass')));
         }, child: const Text('Submit')),
       ]));
@@ -208,13 +212,13 @@ class HomeTab extends StatelessWidget {
               const Spacer(),
               const Text('Dream Big...', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
               const Text('Learn Beyond Limits!', style: TextStyle(color: _gold, fontSize: 22, fontWeight: FontWeight.bold)),
-              Text('Hello, $nm 👋 · v4', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 8),
+              Text('Hello, $nm 👋 · v5', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 8),
               FilledButton(style: FilledButton.styleFrom(backgroundColor: _gold, foregroundColor: Colors.black), onPressed: () => jump(1), child: const Text('Explore Courses →'))])))])),
           Padding(padding: const EdgeInsets.all(14), child: TextField(decoration: InputDecoration(hintText: 'Search courses, quizzes, or topics...', prefixIcon: const Icon(Icons.search), filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(30), borderSide: BorderSide.none)), onSubmitted: (v) => page(c, 'Search: $v', Courses(q: v)))),
           SingleChildScrollView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 8), child: Row(children: [
             ico(Icons.school, 'Courses', _blue, () => jump(1)), ico(Icons.star, 'Reviews', Colors.orange, () => page(c, 'Reviews', const ReviewsPage())),
-            ico(Icons.chat, 'Live Chat', Colors.teal, () => go(c, const Chat(room: 'support', title: 'Live Support'))), ico(Icons.groups, 'Community', Colors.purple, () => jump(3)),
-            ico(Icons.quiz, 'Quiz', Colors.indigo, () => jump(2)), ico(Icons.bar_chart, 'Level Check', Colors.green, () => jump(4))])),
+            ico(Icons.chat, 'Live Chat', Colors.teal, () => go(c, Chat(room: 'support-${me['ID']}', title: 'Live Support'))), ico(Icons.groups, 'Community', Colors.purple, () => jump(3)),
+            ico(Icons.quiz, 'Quiz', Colors.indigo, () => jump(2)), ico(Icons.bar_chart, 'Level Check', Colors.green, () => go(c, Quiz({'ID': 'level', 'Title': 'Level Check'})))])),
           head('Featured Courses', () => jump(1)),
           GridView.count(crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), childAspectRatio: .62, crossAxisSpacing: 10, mainAxisSpacing: 10, padding: const EdgeInsets.symmetric(horizontal: 12), children: [for (final k in courses.take(4)) courseCard(c, k)]),
           Container(margin: const EdgeInsets.fromLTRB(14, 18, 14, 4), padding: const EdgeInsets.all(18), decoration: BoxDecoration(gradient: const LinearGradient(colors: [_dark, Color(0xFF7C3AED)]), borderRadius: BorderRadius.circular(22)), child: Row(children: [
@@ -260,6 +264,7 @@ class QuizTab extends StatelessWidget {
   @override Widget build(BuildContext c) => FutureBuilder(future: api('GET', '/api/courses'), builder: (_, s) {
         if (!s.hasData) return const Center(child: CircularProgressIndicator());
         return ListView(children: [const Padding(padding: EdgeInsets.all(14), child: Text('Quiz do aur certificate pao 🏆', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
+          Card(color: Colors.green.shade50, margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), child: ListTile(leading: const Icon(Icons.bar_chart, color: Colors.green), title: const Text('Level Check (A1 → C1)'), subtitle: const Text('Apna English level jaano'), onTap: () => go(c, Quiz({'ID': 'level', 'Title': 'Level Check'})))),
           for (final k in s.data as List) Card(margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), child: ListTile(leading: SizedBox(width: 80, child: cimg(k, 50)), title: Text(k['Title']), trailing: const Icon(Icons.chevron_right), onTap: () => go(c, Quiz(k))))]);
       });
 }
@@ -295,7 +300,7 @@ class Profile extends StatelessWidget {
           item(Icons.workspace_premium, 'My Certificates', 'Download your certificates', () => page(c, 'My Certificates', ListView(children: [for (final x in certs) ListTile(leading: const Icon(Icons.workspace_premium, color: _gold), title: Text(x['CourseTitle']), subtitle: Text(x['Date']), onTap: () => launchUrl(Uri.parse('$base/certificate/${x['ID']}'), mode: LaunchMode.externalApplication))]))),
           item(Icons.star, 'My Reviews', 'Share your feedback', () => page(c, 'Reviews', const ReviewsPage())),
           item(Icons.groups, 'My Community', 'Connect with learners', () => jump(3)),
-          item(Icons.chat, 'Live Chat', 'Chat with our support team', () => go(c, const Chat(room: 'support', title: 'Live Support'))),
+          item(Icons.chat, 'Live Chat', 'Chat with our support team', () => go(c, Chat(room: 'support-${me['ID']}', title: 'Live Support'))),
           item(Icons.logout, 'Logout', 'Sign out from your account', () { token = ''; Navigator.pushAndRemoveUntil(c, MaterialPageRoute(builder: (_) => const Login()), (_) => false); }, Colors.red),
           Container(margin: const EdgeInsets.all(14), padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: const Color(0xFFEDE9FE), borderRadius: BorderRadius.circular(18)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('⭐ Your Achievements', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)), const SizedBox(height: 8),
