@@ -24,7 +24,8 @@ import (
 )
 
 type User struct {
-	ID, Name, Phone, Email, Level, Roll string
+	ID, Name, Phone, Email, Level, Roll, RefBy string
+	Earned, Paid int
 	Courses                []string
 }
 type Course struct {
@@ -44,7 +45,21 @@ type Review struct {
 	Stars                    int
 	Approved                 bool
 }
-type Group struct{ ID, Name, Owner string }
+type Group struct {
+	ID, Name, Owner string
+	Members         []string
+}
+type FAQ struct{ Keywords, Answer string }
+type Post struct {
+	ID, UserID, Name, Role, Text, Kind string
+	Likes                              []string
+	At                                 int64
+}
+type Attempt struct {
+	UserID, QuizID, Title string
+	Score, Total          int
+	At                    int64
+}
 type Msg struct {
 	ID            int
 	Room, Name, Text string
@@ -90,6 +105,10 @@ type DB struct {
 	Orders   map[string]*Order
 	Lives    []Live
 	Coupons  []Coupon
+	FAQs     []FAQ
+	Posts    []Post
+	Attempts []Attempt
+	Handoff  map[string]bool
 	Creds    map[string]string
 	Sessions map[string]string
 	Files    map[string]File `json:"-"`
@@ -97,7 +116,7 @@ type DB struct {
 }
 
 var (
-	db       = &DB{Users: map[string]*User{}, Quizzes: map[string][]Q{}, Certs: map[string]Cert{}, Orders: map[string]*Order{}, Creds: map[string]string{}, Files: map[string]File{}, Sessions: sessions, Settings: map[string]string{}}
+	db       = &DB{Users: map[string]*User{}, Quizzes: map[string][]Q{}, Certs: map[string]Cert{}, Orders: map[string]*Order{}, Handoff: map[string]bool{}, Creds: map[string]string{}, Files: map[string]File{}, Sessions: sessions, Settings: map[string]string{}}
 	mu       sync.Mutex
 	sessions = map[string]string{}
 	otps     = map[string]string{}
@@ -218,6 +237,9 @@ func fix() {
 	if db.Creds == nil {
 		db.Creds = map[string]string{}
 	}
+	if db.Handoff == nil {
+		db.Handoff = map[string]bool{}
+	}
 	if db.Files == nil {
 		db.Files = map[string]File{}
 	}
@@ -263,7 +285,8 @@ func load() {
 		db.Quizzes[c.ID] = []Q{{"Which is a greeting?", []string{"Hello", "Table", "Run"}, 0}, {"Past of 'go'?", []string{"goed", "went", "gone"}, 1}, {"Plural of 'child'?", []string{"childs", "children", "childes"}, 1}}
 	}
 	db.Combos = []Combo{{"b1", "Spoken English + Accent Training", []string{"c1", "c5"}, 29999, 17999}}
-	db.Groups = []Group{{"g1", "Janhavi Community", "admin"}}
+	db.Groups = []Group{{"g1", "Janhavi Community", "admin", nil}}
+	db.FAQs = []FAQ{{"enrollment,enroll,kharid,buy", "Course lene ke liye Courses tab me course kholo aur Buy Now dabao. Payment ke baad course turant unlock ho jaata hai."}, {"payment,paise,refund", "Payment me dikkat ho to apna email aur payment screenshot yahin bhej dijiye, team check karegi. Team se baat karni ho to 'team' likh dijiye."}, {"quiz,test,certificate", "Course ke baad Quiz tab me quiz do. 60% ya usse zyada aane par certificate apne aap ban jaata hai."}, {"referral,commission,refer", "Profile me aapka referral code hai. Dost aapke code se course kharide to aapko 10% commission milta hai."}}
 	db.Quizzes["level"] = []Q{{"I ___ a student.", []string{"am", "is", "are"}, 0}, {"She ___ to school every day.", []string{"go", "goes", "going"}, 1}, {"They ___ playing now.", []string{"is", "are", "was"}, 1}, {"I have lived here ___ 2010.", []string{"for", "since", "from"}, 1}, {"If it rains, we ___ stay home.", []string{"will", "would", "did"}, 0}, {"He asked me where I ___.", []string{"live", "lived", "living"}, 1}, {"The report ___ by tomorrow.", []string{"will be finished", "finishes", "is finishing"}, 0}, {"Had I known, I ___ come.", []string{"would have", "will", "had"}, 0}, {"She is ___ than her sister.", []string{"tall", "taller", "tallest"}, 1}, {"Hardly ___ arrived when it began to rain.", []string{"had he", "he had", "did he"}, 0}}
 }
 
@@ -381,7 +404,30 @@ func main() {
 				cs = append(cs, c)
 			}
 		}
-		jw(w, map[string]any{"user": u, "certs": cs})
+		rc, rs, na, sm := 0, 0, 0, 0
+		refd := map[string]bool{}
+		for _, x := range db.Users {
+			if x.RefBy == u.ID {
+				rc++
+				refd[x.ID] = true
+			}
+		}
+		for _, o := range db.Orders {
+			if o.Paid && refd[o.UserID] {
+				rs++
+			}
+		}
+		for _, at := range db.Attempts {
+			if at.UserID == u.ID && at.Total > 0 {
+				na++
+				sm += at.Score * 100 / at.Total
+			}
+		}
+		avg := 0
+		if na > 0 {
+			avg = sm / na
+		}
+		jw(w, map[string]any{"user": u, "certs": cs, "refCount": rc, "refSales": rs, "attempts": na, "avgScore": avg})
 	}))
 	// ---- reviews (hidden until approved) ----
 	m.HandleFunc("GET /api/reviews", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) {
@@ -401,16 +447,17 @@ func main() {
 		jw(w, map[string]string{"status": "submitted, pending approval"})
 	}))
 	// ---- groups & live chat (poll /api/chat?room=..&after=id) ----
-	m.HandleFunc("GET /api/groups", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) { jw(w, db.Groups) }))
-	m.HandleFunc("POST /api/groups", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
-		var g Group
-		in(r, &g)
-		g.ID, g.Owner = rid(), u.ID
-		db.Groups = append(db.Groups, g)
-		jw(w, g)
+	m.HandleFunc("GET /api/groups", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
+		out := []Group{}
+		for _, g := range db.Groups {
+			if contains(g.Members, u.ID) {
+				out = append(out, g)
+			}
+		}
+		jw(w, out)
 	}))
 	m.HandleFunc("GET /api/chat", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
-		if rm := r.URL.Query().Get("room"); strings.HasPrefix(rm, "support-") && rm != "support-"+u.ID {
+		if rm := r.URL.Query().Get("room"); !roomOK(rm, u) {
 			http.Error(w, `{"error":"not allowed"}`, 403)
 			return
 		}
@@ -427,12 +474,31 @@ func main() {
 	m.HandleFunc("POST /api/chat", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
 		var x Msg
 		in(r, &x)
-		if strings.HasPrefix(x.Room, "support-") && x.Room != "support-"+u.ID {
+		if !roomOK(x.Room, u) {
 			http.Error(w, `{"error":"not allowed"}`, 403)
 			return
 		}
 		x.ID, x.Name, x.At = len(db.Msgs)+1, u.Name, time.Now().Unix()
 		db.Msgs = append(db.Msgs, x)
+		if strings.HasPrefix(x.Room, "support-") && !db.Handoff[x.Room] {
+			low := strings.ToLower(x.Text)
+			reply := ""
+			for _, f := range db.FAQs {
+				for _, k := range strings.Split(strings.ToLower(f.Keywords), ",") {
+					if k = strings.TrimSpace(k); k != "" && strings.Contains(low, k) {
+						reply = f.Answer
+					}
+				}
+				if reply != "" {
+					break
+				}
+			}
+			if reply == "" || strings.Contains(low, "team") || strings.Contains(low, "human") || strings.Contains(low, "agent") {
+				db.Handoff[x.Room] = true
+				reply = "Aapka sawal humari team ko bhej diya gaya hai. Koi jald aapse yahin baat karega. 🙏"
+			}
+			db.Msgs = append(db.Msgs, Msg{len(db.Msgs) + 1, x.Room, "Janhavi Bot", reply, time.Now().Unix()})
+		}
 		jw(w, x)
 	}))
 	// ---- quiz + certificate ----
@@ -450,6 +516,36 @@ func main() {
 		}
 		pass := len(qs) > 0 && score*100/len(qs) >= 60
 		res := map[string]any{"score": score, "total": len(qs), "passed": pass}
+		qt := r.PathValue("id")
+		for _, c := range db.Courses {
+			if c.ID == qt {
+				qt = c.Title
+			}
+		}
+		if qt == "level" {
+			qt = "Level Check"
+		}
+		db.Attempts = append(db.Attempts, Attempt{u.ID, r.PathValue("id"), qt, score, len(qs), time.Now().Unix()})
+		ans := []int{}
+		for _, q := range qs {
+			ans = append(ans, q.Answer)
+		}
+		res["answers"] = ans
+		best := map[string]int{}
+		for _, at := range db.Attempts {
+			if at.QuizID == r.PathValue("id") && at.Total > 0 {
+				if pc := at.Score * 100 / at.Total; pc > best[at.UserID] {
+					best[at.UserID] = pc
+				}
+			}
+		}
+		rank := 1
+		for id, pc := range best {
+			if id != u.ID && pc > best[u.ID] {
+				rank++
+			}
+		}
+		res["rank"], res["players"] = rank, len(best)
 		if r.PathValue("id") == "level" {
 			lv := []string{"A1", "A1", "A2", "A2", "B1", "B1", "B2", "B2", "C1", "C1", "C1"}
 			i := score
@@ -485,6 +581,10 @@ func main() {
 		signer := db.Settings["cert_signer"]
 		if signer == "" {
 			signer = "Janhavi Panwar"
+		}
+		if tpl := db.Settings["cert_template"]; tpl != "" {
+			fmt.Fprint(w, strings.NewReplacer("{{name}}", html.EscapeString(c.UserName), "{{course}}", html.EscapeString(c.CourseTitle), "{{roll}}", c.Roll, "{{date}}", c.Date, "{{signer}}", html.EscapeString(signer), "{{id}}", c.ID).Replace(tpl))
+			return
 		}
 		fmt.Fprintf(w, `<meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><style>body{margin:0;background:#f5f3ff;font-family:Georgia,serif}.c{max-width:820px;margin:20px auto;background:#fff;border:14px double #6d28d9;padding:40px;text-align:center}h1{color:#2e1065;letter-spacing:3px;margin:8px 0}h2{color:#6d28d9;font-size:34px;margin:10px 0}.g{color:#b45309}.r{display:flex;justify-content:space-between;margin-top:40px;font-size:14px;color:#444}@media print{button{display:none}body{background:#fff}}</style><div class=c><img src="/static/logo.png" height=50><h1>CERTIFICATE OF COMPLETION</h1><p>This is to certify that</p><h2>%s</h2><p>has successfully completed the course</p><h2 class=g>%s</h2><div class=r><span>Roll No: <b>%s</b></span><span>Date: %s</span><span><b>%s</b><br>Wonder Girl of India</span></div><p style="font-size:11px;color:#999">Certificate ID: %s</p></div><center><button onclick=print()>Download / Print</button></center>`, html.EscapeString(c.UserName), html.EscapeString(c.CourseTitle), c.Roll, c.Date, html.EscapeString(signer), c.ID)
 	})
@@ -622,6 +722,11 @@ func main() {
 		}
 		if u := db.Users[o.UserID]; u != nil {
 			u.Courses = append(u.Courses, items...)
+			if rf := db.Users[u.RefBy]; rf != nil {
+				pc := 10
+				fmt.Sscan(db.Settings["ref_percent"], &pc)
+				rf.Earned += o.Amount * pc / 100
+			}
 		}
 		jw(w, "ok")
 	})
@@ -687,10 +792,36 @@ func main() {
 				rp++
 			}
 		}
-		jw(w, map[string]any{"revenue": rev, "orders": paid, "customers": len(db.Users), "pending": pend, "labels": labels, "values": vals, "top": tops, "reviewsPending": rp})
+		odays, cats, catOf := map[string]int{}, map[string]int{}, map[string]string{}
+		for _, c := range db.Courses {
+			catOf[c.ID] = c.Category
+		}
+		mrev, ym := 0, time.Now().Format("2006-01")
+		for _, o := range db.Orders {
+			if !o.Paid {
+				continue
+			}
+			odays[time.Unix(o.At, 0).Format("02 Jan")]++
+			ct := catOf[o.Item]
+			if ct == "" {
+				ct = "Combo"
+			}
+			cats[ct]++
+			if time.Unix(o.At, 0).Format("2006-01") == ym {
+				mrev += o.Amount
+			}
+		}
+		ovals := []int{}
+		for _, l := range labels {
+			ovals = append(ovals, odays[l])
+		}
+		tr, ts := 100000, 100
+		fmt.Sscan(db.Settings["target_revenue"], &tr)
+		fmt.Sscan(db.Settings["target_students"], &ts)
+		jw(w, map[string]any{"revenue": rev, "orders": paid, "customers": len(db.Users), "pending": pend, "labels": labels, "values": vals, "top": tops, "reviewsPending": rp, "ovalues": ovals, "cats": cats, "monthRevenue": mrev, "targetRevenue": tr, "targetStudents": ts, "certs": len(db.Certs)})
 	}))
 	m.HandleFunc("POST /api/auth/register", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) {
-		var b struct{ Name, Email, Phone, Password string }
+		var b struct{ Name, Email, Phone, Password, Ref string }
 		in(r, &b)
 		e := strings.ToLower(strings.TrimSpace(b.Email))
 		if e == "" || b.Name == "" || len(b.Password) < 6 {
@@ -708,6 +839,13 @@ func main() {
 			db.Users[u.ID] = u
 		}
 		u.Name, u.Phone = b.Name, b.Phone
+		if b.Ref != "" && u.RefBy == "" {
+			for _, x := range db.Users {
+				if strings.EqualFold(x.Roll, strings.TrimSpace(b.Ref)) && x.ID != u.ID {
+					u.RefBy = x.ID
+				}
+			}
+		}
 		login(w, u)
 	}))
 	m.HandleFunc("POST /api/auth/login", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) {
@@ -831,13 +969,14 @@ func main() {
 		type R struct {
 			Room, Last, Name string
 			At               int64
+			Team             bool
 		}
 		rooms := map[string]*R{}
 		for _, x := range db.Msgs {
 			if strings.HasPrefix(x.Room, "support-") {
 				rr := rooms[x.Room]
 				if rr == nil {
-					rr = &R{Room: x.Room}
+					rr = &R{Room: x.Room, Team: db.Handoff[x.Room]}
 					rooms[x.Room] = rr
 				}
 				rr.Last, rr.At = x.Text, x.At
@@ -866,6 +1005,7 @@ func main() {
 		var x Msg
 		in(r, &x)
 		x.ID, x.Name, x.At = len(db.Msgs)+1, "Janhavi Team", time.Now().Unix()
+		db.Handoff[x.Room] = true
 		db.Msgs = append(db.Msgs, x)
 		jw(w, x)
 	}))
@@ -879,6 +1019,191 @@ func main() {
 		db = &n
 		fix()
 		jw(w, "restored")
+	}))
+	m.HandleFunc("GET /api/admin/groups", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) { jw(w, db.Groups) }))
+	m.HandleFunc("POST /api/admin/groups", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		var g Group
+		in(r, &g)
+		g.ID, g.Owner, g.Members = rid(), "admin", []string{}
+		db.Groups = append(db.Groups, g)
+		jw(w, g)
+	}))
+	m.HandleFunc("POST /api/admin/groups/{id}/add", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		var b struct {
+			All                          bool
+			FromDate, ToDate, CourseID   string
+			MinAmount, MaxAmount         int
+		}
+		in(r, &b)
+		add := map[string]bool{}
+		if b.All {
+			for id := range db.Users {
+				add[id] = true
+			}
+		} else {
+			for _, o := range db.Orders {
+				d := time.Unix(o.At, 0).Format("2006-01-02")
+				if !o.Paid || (b.FromDate != "" && d < b.FromDate) || (b.ToDate != "" && d > b.ToDate) {
+					continue
+				}
+				if o.Amount < b.MinAmount || (b.MaxAmount > 0 && o.Amount > b.MaxAmount) || (b.CourseID != "" && !itemHas(o.Item, b.CourseID)) {
+					continue
+				}
+				add[o.UserID] = true
+			}
+		}
+		for i := range db.Groups {
+			g := &db.Groups[i]
+			if g.ID == r.PathValue("id") {
+				n := 0
+				for id := range add {
+					if db.Users[id] != nil && !contains(g.Members, id) {
+						g.Members = append(g.Members, id)
+						n++
+					}
+				}
+				jw(w, map[string]int{"added": n, "members": len(g.Members)})
+				return
+			}
+		}
+		http.NotFound(w, r)
+	}))
+	m.HandleFunc("GET /api/admin/faqs", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) { jw(w, db.FAQs) }))
+	m.HandleFunc("POST /api/admin/faqs", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		var f FAQ
+		in(r, &f)
+		db.FAQs = append(db.FAQs, f)
+		jw(w, f)
+	}))
+	m.HandleFunc("POST /api/admin/faqs/{i}/delete", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		i := -1
+		fmt.Sscan(r.PathValue("i"), &i)
+		if i >= 0 && i < len(db.FAQs) {
+			db.FAQs = append(db.FAQs[:i], db.FAQs[i+1:]...)
+		}
+		jw(w, "ok")
+	}))
+	m.HandleFunc("GET /api/admin/referrals", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		type RR struct {
+			ID, Name, Roll        string
+			Earned, Paid, Referred int
+		}
+		cnt := map[string]int{}
+		for _, u := range db.Users {
+			if u.RefBy != "" {
+				cnt[u.RefBy]++
+			}
+		}
+		out := []RR{}
+		for _, u := range db.Users {
+			if u.Earned > 0 || cnt[u.ID] > 0 {
+				out = append(out, RR{u.ID, u.Name, u.Roll, u.Earned, u.Paid, cnt[u.ID]})
+			}
+		}
+		jw(w, out)
+	}))
+	m.HandleFunc("POST /api/admin/referrals/pay", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		var b struct {
+			UserID string
+			Amount int
+		}
+		in(r, &b)
+		if u := db.Users[b.UserID]; u != nil {
+			u.Paid += b.Amount
+		}
+		jw(w, "ok")
+	}))
+	m.HandleFunc("GET /api/posts", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
+		type PV struct {
+			ID, Name, Role, Text, Kind string
+			Likes                      int
+			Liked, Mine                bool
+			At                         int64
+		}
+		out := []PV{}
+		for i := len(db.Posts) - 1; i >= 0; i-- {
+			p := db.Posts[i]
+			out = append(out, PV{p.ID, p.Name, p.Role, p.Text, p.Kind, len(p.Likes), contains(p.Likes, u.ID), p.UserID == u.ID, p.At})
+		}
+		jw(w, out)
+	}))
+	m.HandleFunc("POST /api/posts", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
+		var b struct{ Text, Kind string }
+		in(r, &b)
+		b.Text = strings.TrimSpace(b.Text)
+		if b.Text == "" || len(b.Text) > 1000 {
+			http.Error(w, `{"error":"post khali ya bahut lambi hai"}`, 400)
+			return
+		}
+		k := "post"
+		if b.Kind == "question" {
+			k = "question"
+		}
+		db.Posts = append(db.Posts, Post{rid(), u.ID, u.Name, "Learner", b.Text, k, nil, time.Now().Unix()})
+		jw(w, "ok")
+	}))
+	m.HandleFunc("POST /api/posts/{id}/like", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
+		for i := range db.Posts {
+			p := &db.Posts[i]
+			if p.ID == r.PathValue("id") {
+				if contains(p.Likes, u.ID) {
+					nl := []string{}
+					for _, x := range p.Likes {
+						if x != u.ID {
+							nl = append(nl, x)
+						}
+					}
+					p.Likes = nl
+				} else {
+					p.Likes = append(p.Likes, u.ID)
+				}
+			}
+		}
+		jw(w, "ok")
+	}))
+	m.HandleFunc("GET /api/quizzes", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		type QL struct {
+			ID, Title string
+			Questions int
+		}
+		out := []QL{}
+		for _, c := range db.Courses {
+			if n := len(db.Quizzes[c.ID]); n > 0 {
+				out = append(out, QL{c.ID, c.Title, n})
+			}
+		}
+		jw(w, out)
+	}))
+	m.HandleFunc("GET /api/attempts", guard(false, func(w http.ResponseWriter, r *http.Request, u *User) {
+		out := []Attempt{}
+		for i := len(db.Attempts) - 1; i >= 0; i-- {
+			if db.Attempts[i].UserID == u.ID {
+				out = append(out, db.Attempts[i])
+			}
+		}
+		jw(w, out)
+	}))
+	m.HandleFunc("GET /api/config", guard(false, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		jw(w, map[string]string{"whatsapp": db.Settings["wa_number"]})
+	}))
+	m.HandleFunc("GET /api/admin/posts", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) { jw(w, db.Posts) }))
+	m.HandleFunc("POST /api/admin/posts", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		var b struct{ Text, Kind string }
+		in(r, &b)
+		if b.Kind == "" {
+			b.Kind = "announcement"
+		}
+		db.Posts = append(db.Posts, Post{rid(), "admin", "Janhavi Panwar", "Admin", b.Text, b.Kind, nil, time.Now().Unix()})
+		jw(w, "ok")
+	}))
+	m.HandleFunc("POST /api/admin/posts/{id}/delete", guard(true, func(w http.ResponseWriter, r *http.Request, _ *User) {
+		for i, p := range db.Posts {
+			if p.ID == r.PathValue("id") {
+				db.Posts = append(db.Posts[:i], db.Posts[i+1:]...)
+				break
+			}
+		}
+		jw(w, "ok")
 	}))
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -909,4 +1234,27 @@ func cors(h http.Handler) http.Handler {
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+func roomOK(room string, u *User) bool {
+	if strings.HasPrefix(room, "support-") {
+		return room == "support-"+u.ID
+	}
+	for _, g := range db.Groups {
+		if g.ID == room {
+			return contains(g.Members, u.ID)
+		}
+	}
+	return false
+}
+func itemHas(item, course string) bool {
+	if item == course {
+		return true
+	}
+	for _, c := range db.Combos {
+		if c.ID == item && contains(c.Items, course) {
+			return true
+		}
+	}
+	return false
 }

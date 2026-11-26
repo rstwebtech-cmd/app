@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -39,12 +40,12 @@ void main() => runApp(MaterialApp(
     theme: ThemeData(colorSchemeSeed: const Color(0xFF6D28D9), scaffoldBackgroundColor: const Color(0xFFF5F3FF), useMaterial3: true),
     home: const Login()));
 
-void go(BuildContext c, Widget w) => Navigator.push(c, MaterialPageRoute(builder: (_) => w));
+void go(BuildContext c, Widget w) => Navigator.push(c, PageRouteBuilder(transitionDuration: const Duration(milliseconds: 350), pageBuilder: (_, __, ___) => w, transitionsBuilder: (_, a, __, child) => FadeTransition(opacity: a, child: SlideTransition(position: Tween(begin: const Offset(0.08, 0), end: Offset.zero).animate(CurvedAnimation(parent: a, curve: Curves.easeOut)), child: child))));
 void snack(BuildContext c, String s) => ScaffoldMessenger.of(c).showSnackBar(SnackBar(content: Text(s)));
 
 class Login extends StatefulWidget { const Login({super.key}); @override State<Login> createState() => _L(); }
 class _L extends State<Login> {
-  final nm = TextEditingController(), ph = TextEditingController(), em = TextEditingController(), pw = TextEditingController();
+  final nm = TextEditingController(), ph = TextEditingController(), em = TextEditingController(), pw = TextEditingController(), rf = TextEditingController();
   bool reg = false, busy = false;
   void done(r) {
     setState(() => busy = false);
@@ -62,10 +63,10 @@ class _L extends State<Login> {
             if (reg) f(nm, 'Pura naam'),
             f(em, 'Email', t: TextInputType.emailAddress),
             if (reg) f(ph, 'Mobile number', t: TextInputType.phone),
-            f(pw, 'Password (6+ akshar)', pass: true), const SizedBox(height: 12),
+            f(pw, 'Password (6+ akshar)', pass: true), if (reg) f(rf, 'Referral code (optional)'), const SizedBox(height: 12),
             SizedBox(width: double.infinity, child: FilledButton(onPressed: busy ? null : () async {
               setState(() => busy = true);
-              done(reg ? await api('POST', '/api/auth/register', {'name': nm.text, 'email': em.text, 'phone': ph.text, 'password': pw.text}) : await api('POST', '/api/auth/login', {'email': em.text, 'password': pw.text}));
+              done(reg ? await api('POST', '/api/auth/register', {'name': nm.text, 'email': em.text, 'phone': ph.text, 'password': pw.text, 'ref': rf.text}) : await api('POST', '/api/auth/login', {'email': em.text, 'password': pw.text}));
             }, child: Text(busy ? 'Please wait...' : reg ? 'Create Account' : 'Login'))),
             TextButton(onPressed: () => setState(() => reg = !reg), child: Text(reg ? 'Account hai? Login karo' : 'Naya account banao')),
             OutlinedButton.icon(icon: const Icon(Icons.g_mobiledata, size: 30), label: const Text('Continue with Google'), onPressed: () async {
@@ -82,9 +83,9 @@ class _H extends State<Home> {
   int i = 0;
   @override Widget build(BuildContext c) {
     void jump(int v) => setState(() => i = v);
-    final tabs = [HomeTab(jump), const Courses(), const QuizTab(), const Community(), Profile(jump)];
+    final tabs = [HomeTab(jump), const Courses(), const QuizTab(), const CommunityTab(), Profile(jump)];
     return Scaffold(
-      body: SafeArea(top: i != 0, child: tabs[i]),
+      body: SafeArea(top: i != 0, child: AnimatedSwitcher(duration: const Duration(milliseconds: 300), child: KeyedSubtree(key: ValueKey(i), child: tabs[i]))),
       bottomNavigationBar: NavigationBar(selectedIndex: i, onDestinationSelected: jump, destinations: const [
         NavigationDestination(icon: Icon(Icons.home), label: 'Home'),
         NavigationDestination(icon: Icon(Icons.play_circle), label: 'Courses'),
@@ -127,7 +128,7 @@ class _Cs extends State<Courses> {
         final l = (s.data as List).where((x) => (cat == 'All' || x['Category'] == cat) && x['Title'].toString().toLowerCase().contains(widget.q.toLowerCase())).toList();
         return Column(children: [
           SizedBox(height: 56, child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.all(8), children: [for (final t in cats) Padding(padding: const EdgeInsets.only(right: 8), child: ChoiceChip(label: Text(t), selected: cat == t, onSelected: (_) => setState(() => cat = t)))])),
-          Expanded(child: GridView.count(crossAxisCount: 2, childAspectRatio: .62, crossAxisSpacing: 10, mainAxisSpacing: 10, padding: const EdgeInsets.all(10), children: [for (final k in l) courseCard(c, k)]))]);
+          Expanded(child: GridView.count(crossAxisCount: 2, childAspectRatio: .62, crossAxisSpacing: 10, mainAxisSpacing: 10, padding: const EdgeInsets.all(10), children: [for (var i = 0; i < l.length; i++) Fade(courseCard(c, l[i]), i: i)]))]);
       });
 }
 
@@ -164,16 +165,14 @@ class Combos extends StatelessWidget {
 class Community extends StatelessWidget {
   const Community({super.key});
   @override Widget build(BuildContext c) => FutureBuilder(future: api('GET', '/api/groups'), builder: (_, s) => Scaffold(
-        floatingActionButton: FloatingActionButton(child: const Icon(Icons.add), onPressed: () async {
-          await api('POST', '/api/groups', {'name': 'Group ${DateTime.now().minute}${DateTime.now().second}'}); snack(c, 'Group created - reopen tab'); }),
-        body: ListView(children: [for (final g in (s.data as List? ?? [])) ListTile(leading: const Icon(Icons.groups), title: Text(g['Name']), onTap: () => go(c, Chat(room: g['ID'], title: g['Name'])))])));
+        body: (s.data is List && (s.data as List).isEmpty) ? const Center(child: Padding(padding: EdgeInsets.all(24), child: Text('Community me abhi aap add nahi hue. Course kharidne ke baad admin aapko add karenge.', textAlign: TextAlign.center))) : ListView(children: [for (final g in (s.data as List? ?? [])) ListTile(leading: const Icon(Icons.groups), title: Text(g['Name']), onTap: () => go(c, Chat(room: g['ID'], title: g['Name'])))])));
 }
 
-class Chat extends StatefulWidget { final String room, title; const Chat({super.key, required this.room, required this.title}); @override State<Chat> createState() => _Ch(); }
+class Chat extends StatefulWidget { final String room, title; final String? first; const Chat({super.key, required this.room, required this.title, this.first}); @override State<Chat> createState() => _Ch(); }
 class _Ch extends State<Chat> {
   final t = TextEditingController(); List m = []; Timer? tm;
   Future poll() async { final r = await api('GET', '/api/chat?room=${widget.room}&after=0'); if (mounted) setState(() => m = r); }
-  @override void initState() { super.initState(); poll(); tm = Timer.periodic(const Duration(seconds: 3), (_) => poll()); }
+  @override void initState() { super.initState(); if (widget.first != null) { api('POST', '/api/chat', {'room': widget.room, 'text': widget.first}).then((_) => poll()); } else { poll(); } tm = Timer.periodic(const Duration(seconds: 3), (_) => poll()); }
   @override void dispose() { tm?.cancel(); super.dispose(); }
   @override Widget build(BuildContext c) => Scaffold(appBar: AppBar(title: Text(widget.title)), body: Column(children: [
         Expanded(child: ListView(children: [for (final x in m) ListTile(dense: true, title: Text(x['Name'], style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text(x['Text']))])),
@@ -182,6 +181,7 @@ class _Ch extends State<Chat> {
 
 class Quiz extends StatefulWidget { final Map k; const Quiz(this.k, {super.key}); @override State<Quiz> createState() => _Q(); }
 class _Q extends State<Quiz> {
+  final sw = Stopwatch()..start();
   List qs = []; Map<int, int> a = {};
   @override void initState() { super.initState(); api('GET', '/api/quiz/${widget.k['ID']}').then((v) => setState(() => qs = v)); }
   @override Widget build(BuildContext c) => Scaffold(appBar: AppBar(title: const Text('Final Quiz')), body: ListView(padding: const EdgeInsets.all(12), children: [
@@ -191,8 +191,7 @@ class _Q extends State<Quiz> {
         FilledButton(onPressed: () async {
           final r = await api('POST', '/api/quiz/${widget.k['ID']}', {'answers': [for (var i = 0; i < qs.length; i++) a[i] ?? -1]});
           if (!mounted) return;
-          showDialog(context: c, builder: (_) => r['level'] != null ? AlertDialog(title: Text('Your Level: ${r['level']} 🎯'), content: Text('Score ${r['score']}/${r['total']}')) : AlertDialog(title: Text(r['passed'] ? '🎉 Passed ${r['score']}/${r['total']}' : 'Score ${r['score']}/${r['total']} - try again'),
-              content: Text(r['passed'] ? 'Certificate: $base/certificate/${r['certificate']}' : 'Need 60% to pass')));
+          Navigator.pushReplacement(c, MaterialPageRoute(builder: (_) => QuizResult(widget.k, qs, [for (var i = 0; i < qs.length; i++) a[i] ?? -1], r is Map ? r : {}, sw.elapsed.inSeconds)));
         }, child: const Text('Submit')),
       ]));
 }
@@ -219,15 +218,15 @@ class HomeTab extends StatelessWidget {
               const Spacer(),
               const Text('Dream Big...', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
               const Text('Learn Beyond Limits!', style: TextStyle(color: _gold, fontSize: 22, fontWeight: FontWeight.bold)),
-              Text('Hello, $nm 👋 · v6', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 8),
+              Text('Hello, $nm 👋 · v8', style: const TextStyle(color: Colors.white70)), const SizedBox(height: 8),
               FilledButton(style: FilledButton.styleFrom(backgroundColor: _gold, foregroundColor: Colors.black), onPressed: () => jump(1), child: const Text('Explore Courses →'))])))])),
           Padding(padding: const EdgeInsets.all(14), child: TextField(decoration: InputDecoration(hintText: 'Search courses, quizzes, or topics...', prefixIcon: const Icon(Icons.search), filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(30), borderSide: BorderSide.none)), onSubmitted: (v) => page(c, 'Search: $v', Courses(q: v)))),
           SingleChildScrollView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.symmetric(horizontal: 8), child: Row(children: [
             ico(Icons.school, 'Courses', _blue, () => jump(1)), ico(Icons.star, 'Reviews', Colors.orange, () => page(c, 'Reviews', const ReviewsPage())),
-            ico(Icons.chat, 'Live Chat', Colors.teal, () => go(c, Chat(room: 'support-${me['ID']}', title: 'Live Support'))), ico(Icons.groups, 'Community', Colors.purple, () => jump(3)),
+            ico(Icons.chat, 'Live Chat', Colors.teal, () => go(c, const LiveChatHome())), ico(Icons.groups, 'Community', Colors.purple, () => jump(3)),
             ico(Icons.quiz, 'Quiz', Colors.indigo, () => jump(2)), ico(Icons.bar_chart, 'Level Check', Colors.green, () => go(c, Quiz({'ID': 'level', 'Title': 'Level Check'})))])),
           head('Featured Courses', () => jump(1)),
-          GridView.count(crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), childAspectRatio: .62, crossAxisSpacing: 10, mainAxisSpacing: 10, padding: const EdgeInsets.symmetric(horizontal: 12), children: [for (final k in courses.take(4)) courseCard(c, k)]),
+          GridView.count(crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), childAspectRatio: .62, crossAxisSpacing: 10, mainAxisSpacing: 10, padding: const EdgeInsets.symmetric(horizontal: 12), children: [for (var i = 0; i < (courses.length < 4 ? courses.length : 4); i++) Fade(courseCard(c, courses[i]), i: i)]),
           Container(margin: const EdgeInsets.fromLTRB(14, 18, 14, 4), padding: const EdgeInsets.all(18), decoration: BoxDecoration(gradient: const LinearGradient(colors: [_dark, Color(0xFF7C3AED)]), borderRadius: BorderRadius.circular(22)), child: Row(children: [
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2), decoration: BoxDecoration(color: Colors.red, borderRadius: BorderRadius.circular(8)), child: Text(live.isEmpty ? 'Coming Soon' : 'Live', style: const TextStyle(color: Colors.white, fontSize: 12))),
@@ -236,7 +235,7 @@ class HomeTab extends StatelessWidget {
               FilledButton(style: FilledButton.styleFrom(backgroundColor: Colors.white, foregroundColor: _blue), onPressed: () => live.isEmpty ? page(c, 'Live Classes', const LiveTab()) : launchUrl(Uri.parse(live[0]['Link']), mode: LaunchMode.externalApplication), child: const Text('Join Live →'))])),
             const Icon(Icons.podcasts, color: _gold, size: 60)])),
           Padding(padding: const EdgeInsets.fromLTRB(10, 12, 10, 0), child: Row(children: [
-            qc(Icons.local_offer, 'Combo Offers', 'Save more', Colors.deepOrange, () => page(c, 'Combo Offers', const Combos())), qc(Icons.trending_up, 'Your Progress', 'Track Level', Colors.orange, () => jump(4)),
+            qc(Icons.local_offer, 'Combo Offers', 'Save more', Colors.deepOrange, () => page(c, 'Combo Offers', const Combos())), qc(Icons.card_giftcard, 'Refer & Earn', '10% Commission', Colors.orange, () => go(c, const ReferPage())),
             qc(Icons.workspace_premium, 'Certificates', 'Get Certified', Colors.amber, () => jump(4)), qc(Icons.quiz, 'Take Quiz', 'Test Skills', Colors.indigo, () => jump(2))])),
           head('What Our Learners Say', () => page(c, 'Reviews', const ReviewsPage())),
           Padding(padding: const EdgeInsets.symmetric(horizontal: 14), child: Row(children: [
@@ -266,14 +265,115 @@ class LiveTab extends StatelessWidget {
       });
 }
 
-class QuizTab extends StatelessWidget {
-  const QuizTab({super.key});
-  @override Widget build(BuildContext c) => FutureBuilder(future: api('GET', '/api/courses'), builder: (_, s) {
+class Fade extends StatelessWidget {
+  final Widget child; final int i;
+  const Fade(this.child, {super.key, this.i = 0});
+  @override Widget build(BuildContext c) => TweenAnimationBuilder<double>(tween: Tween(begin: 0, end: 1), duration: Duration(milliseconds: 350 + i * 90), curve: Curves.easeOut, builder: (_, v, ch) => Opacity(opacity: v, child: Transform.translate(offset: Offset(0, 24 * (1 - v)), child: ch)), child: child);
+}
+
+class CommunityTab extends StatefulWidget { const CommunityTab({super.key}); @override State<CommunityTab> createState() => _CT(); }
+class _CT extends State<CommunityTab> {
+  bool feed = true;
+  @override Widget build(BuildContext c) => Column(children: [
+        Container(width: double.infinity, padding: const EdgeInsets.fromLTRB(18, 18, 18, 14), decoration: const BoxDecoration(gradient: LinearGradient(colors: [_dark, Color(0xFF7C3AED)]), borderRadius: BorderRadius.vertical(bottom: Radius.circular(26))), child: const Row(children: [
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Join Our', style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold)), Text('Community', style: TextStyle(color: _gold, fontSize: 28, fontWeight: FontWeight.bold)), Text('Learn Together, Grow Together!', style: TextStyle(color: Colors.white70))])),
+          Icon(Icons.groups, color: Colors.white, size: 64)])),
+        Padding(padding: const EdgeInsets.all(10), child: Row(children: [for (final t in ['Feed', 'My Groups']) Expanded(child: Padding(padding: const EdgeInsets.all(3), child: ChoiceChip(label: SizedBox(width: double.infinity, child: Text(t, textAlign: TextAlign.center)), selected: (t == 'Feed') == feed, onSelected: (_) => setState(() => feed = t == 'Feed'))))])),
+        Expanded(child: AnimatedSwitcher(duration: const Duration(milliseconds: 250), child: feed ? const FeedView(key: ValueKey(1)) : const Community(key: ValueKey(2))))]);
+}
+
+class FeedView extends StatefulWidget { const FeedView({super.key}); @override State<FeedView> createState() => _FV(); }
+class _FV extends State<FeedView> {
+  final t = TextEditingController(); String kind = 'all'; late Future f = api('GET', '/api/posts');
+  void reload() => setState(() => f = api('GET', '/api/posts'));
+  @override Widget build(BuildContext c) => Column(children: [
+        Padding(padding: const EdgeInsets.symmetric(horizontal: 12), child: Row(children: [Expanded(child: TextField(controller: t, decoration: InputDecoration(hintText: 'Share your thoughts...', filled: true, fillColor: Colors.white, border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none)))), const SizedBox(width: 6), FilledButton(onPressed: () async { if (t.text.trim().isEmpty) return; await api('POST', '/api/posts', {'text': t.text, 'kind': t.text.trim().endsWith('?') ? 'question' : 'post'}); t.clear(); reload(); }, child: const Text('Post'))])),
+        SizedBox(height: 50, child: ListView(scrollDirection: Axis.horizontal, padding: const EdgeInsets.all(8), children: [for (final k in ['all', 'mine', 'question', 'announcement']) Padding(padding: const EdgeInsets.only(right: 8), child: ChoiceChip(label: Text({'all': 'All Posts', 'mine': 'My Posts', 'question': 'Questions', 'announcement': 'Announcements'}[k]!), selected: kind == k, onSelected: (_) => setState(() => kind = k)))])),
+        Expanded(child: FutureBuilder(future: f, builder: (_, s) {
+          if (!s.hasData) return const Center(child: CircularProgressIndicator());
+          final l = (s.data is List ? s.data as List : []).where((p) => kind == 'all' || (kind == 'mine' ? p['Mine'] == true : p['Kind'] == kind)).toList();
+          if (l.isEmpty) return const Center(child: Text('Abhi koi post nahi. Pehli post aap karo!'));
+          return ListView(children: [for (var i = 0; i < l.length; i++) Fade(i: i, Card(margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), child: Padding(padding: const EdgeInsets.all(12), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [CircleAvatar(backgroundColor: const Color(0xFFEDE9FE), child: Text(l[i]['Name'].toString().isEmpty ? '?' : l[i]['Name'][0])), const SizedBox(width: 8), Text(l[i]['Name'], style: const TextStyle(fontWeight: FontWeight.bold)), const SizedBox(width: 6), Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1), decoration: BoxDecoration(color: l[i]['Role'] == 'Admin' ? Colors.red : _blue, borderRadius: BorderRadius.circular(10)), child: Text(l[i]['Role'], style: const TextStyle(color: Colors.white, fontSize: 11)))]),
+            const SizedBox(height: 8), Text(l[i]['Text']),
+            Row(children: [TextButton.icon(onPressed: () async { await api('POST', '/api/posts/${l[i]['ID']}/like'); reload(); }, icon: Icon(l[i]['Liked'] == true ? Icons.thumb_up : Icons.thumb_up_outlined, size: 18), label: Text('${l[i]['Likes']}')), if (l[i]['Kind'] != 'post') Text(l[i]['Kind'] == 'question' ? '❓ Question' : '📢 Announcement', style: const TextStyle(fontSize: 12))])]))))]);
+        }))]);
+}
+
+class QuizTab extends StatefulWidget { const QuizTab({super.key}); @override State<QuizTab> createState() => _QT(); }
+class _QT extends State<QuizTab> {
+  bool hist = false;
+  @override Widget build(BuildContext c) => FutureBuilder(future: Future.wait([api('GET', '/api/quizzes'), api('GET', '/api/attempts'), api('GET', '/api/me')]), builder: (_, s) {
         if (!s.hasData) return const Center(child: CircularProgressIndicator());
-        return ListView(children: [const Padding(padding: EdgeInsets.all(14), child: Text('Quiz do aur certificate pao 🏆', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
-          Card(color: Colors.green.shade50, margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), child: ListTile(leading: const Icon(Icons.bar_chart, color: Colors.green), title: const Text('Level Check (A1 → C1)'), subtitle: const Text('Apna English level jaano'), onTap: () => go(c, Quiz({'ID': 'level', 'Title': 'Level Check'})))),
-          for (final k in s.data as List) Card(margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4), child: ListTile(leading: SizedBox(width: 80, child: cimg(k, 50)), title: Text(k['Title']), trailing: const Icon(Icons.chevron_right), onTap: () => go(c, Quiz(k))))]);
+        final d = s.data as List; final qz = d[0] is List ? d[0] as List : []; final at = d[1] is List ? d[1] as List : []; final m2 = d[2] is Map ? d[2] as Map : {};
+        Widget st(IconData i, num v, String t, String suf) => Expanded(child: Column(children: [Icon(i, color: _blue), TweenAnimationBuilder<double>(tween: Tween(begin: 0, end: v.toDouble()), duration: const Duration(milliseconds: 900), builder: (_, x, __) => Text('${x.round()}$suf', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))), Text(t, style: const TextStyle(fontSize: 11))]));
+        return ListView(padding: EdgeInsets.zero, children: [
+          Container(padding: const EdgeInsets.all(20), decoration: const BoxDecoration(gradient: LinearGradient(colors: [_dark, Color(0xFF7C3AED)]), borderRadius: BorderRadius.vertical(bottom: Radius.circular(26))), child: const Row(children: [Expanded(child: Text('Test Your Knowledge\n& Track Your Progress', style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold))), Icon(Icons.emoji_events, color: _gold, size: 70)])),
+          Container(margin: const EdgeInsets.all(14), padding: const EdgeInsets.symmetric(vertical: 14), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(18)), child: Row(children: [st(Icons.quiz, at.length, 'Attempts', ''), st(Icons.star, (m2['avgScore'] ?? 0) as num, 'Avg Score', '%'), st(Icons.workspace_premium, (m2['certs'] as List? ?? []).length, 'Certificates', '')])),
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 14), child: Row(children: [Expanded(child: ChoiceChip(label: const SizedBox(width: double.infinity, child: Text('Available Quizzes', textAlign: TextAlign.center)), selected: !hist, onSelected: (_) => setState(() => hist = false))), const SizedBox(width: 8), Expanded(child: ChoiceChip(label: const SizedBox(width: double.infinity, child: Text('My History', textAlign: TextAlign.center)), selected: hist, onSelected: (_) => setState(() => hist = true)))])),
+          if (!hist) ...[
+            Fade(Card(color: Colors.green.shade50, margin: const EdgeInsets.fromLTRB(14, 10, 14, 4), child: ListTile(leading: const Icon(Icons.bar_chart, color: Colors.green, size: 34), title: const Text('Level Check (A1 → C1)', style: TextStyle(fontWeight: FontWeight.bold)), subtitle: const Text('Apna English level jaano'), trailing: FilledButton(onPressed: () => go(c, Quiz({'ID': 'level', 'Title': 'Level Check'})), child: const Text('Start →'))))),
+            for (var i = 0; i < qz.length; i++) Fade(i: i + 1, Card(margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4), child: ListTile(leading: const Icon(Icons.assignment, color: _blue, size: 34), title: Text(qz[i]['Title'], style: const TextStyle(fontWeight: FontWeight.bold)), subtitle: Text('${qz[i]['Questions']} Questions'), trailing: FilledButton(onPressed: () => go(c, Quiz({'ID': qz[i]['ID'], 'Title': qz[i]['Title']})), child: const Text('Start →')))))
+          ] else ...[
+            if (at.isEmpty) const Padding(padding: EdgeInsets.all(24), child: Center(child: Text('Abhi koi quiz attempt nahi kiya'))),
+            for (var i = 0; i < at.length; i++) Fade(i: i, Card(margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 4), child: ListTile(leading: const Icon(Icons.history, color: _blue), title: Text(at[i]['Title']), subtitle: Text(DateTime.fromMillisecondsSinceEpoch((at[i]['At'] as int) * 1000).toString().substring(0, 16)), trailing: Text('${at[i]['Score']}/${at[i]['Total']}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)))))
+          ],
+          const SizedBox(height: 20)]);
       });
+}
+
+class QuizResult extends StatelessWidget {
+  final Map k; final List qs; final List ans; final Map r; final int secs;
+  const QuizResult(this.k, this.qs, this.ans, this.r, this.secs, {super.key});
+  @override Widget build(BuildContext c) {
+    if (r['score'] == null) return Scaffold(appBar: AppBar(), body: Center(child: Text('${r['error'] ?? 'Kuch gadbad hui'}')));
+    final total = r['total'] as int, sc = r['score'] as int; final pct = total == 0 ? 0.0 : sc / total; final lvl = r['level'];
+    final key = (r['answers'] as List? ?? []);
+    return Scaffold(appBar: AppBar(title: const Text('Quiz Result')), body: ListView(padding: const EdgeInsets.all(16), children: [
+      const Icon(Icons.emoji_events, color: _gold, size: 90),
+      Center(child: Text(lvl != null ? 'Your Level: $lvl 🎯' : pct >= .6 ? 'Great Attempt! 🎉' : 'Keep Practicing 💪', style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: _dark))),
+      Center(child: Text('You scored $sc out of $total', style: const TextStyle(color: Colors.red, fontSize: 16))), const SizedBox(height: 16),
+      Row(children: [
+        SizedBox(width: 130, height: 130, child: TweenAnimationBuilder<double>(tween: Tween(begin: 0, end: pct), duration: const Duration(milliseconds: 1200), curve: Curves.easeOut, builder: (_, v, __) => Stack(alignment: Alignment.center, children: [SizedBox(width: 130, height: 130, child: CircularProgressIndicator(value: v, strokeWidth: 12, color: Colors.green, backgroundColor: Colors.grey.shade300)), Text('${(v * 100).round()}%', style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold))]))),
+        const SizedBox(width: 20),
+        Expanded(child: Column(children: [ListTile(dense: true, leading: const Icon(Icons.check_circle, color: Colors.green), title: const Text('Correct'), trailing: Text('$sc')), ListTile(dense: true, leading: const Icon(Icons.cancel, color: Colors.red), title: const Text('Wrong'), trailing: Text('${total - sc}')), ListTile(dense: true, leading: const Icon(Icons.timer, color: _blue), title: const Text('Time'), trailing: Text('${secs ~/ 60}:${(secs % 60).toString().padLeft(2, '0')}'))]))]),
+      const SizedBox(height: 12),
+      FilledButton(onPressed: () => page(c, 'Answer Sheet', ListView(children: [for (var i = 0; i < qs.length && i < key.length; i++) Card(margin: const EdgeInsets.all(8), child: ListTile(isThreeLine: true, title: Text('${i + 1}. ${qs[i]['Q']}'), subtitle: Text('Aapka jawab: ${ans[i] >= 0 ? qs[i]['Options'][ans[i]] : '-'}\nSahi jawab: ${qs[i]['Options'][key[i]]}', style: TextStyle(color: ans[i] == key[i] ? Colors.green : Colors.red))))])), child: const Text('View Answer Sheet')),
+      OutlinedButton(onPressed: () => Navigator.pushReplacement(c, MaterialPageRoute(builder: (_) => Quiz(k))), child: const Text('Try Again')),
+      if (r['certificate'] != null) FilledButton(style: FilledButton.styleFrom(backgroundColor: _gold, foregroundColor: Colors.black), onPressed: () => launchUrl(Uri.parse('$base/certificate/${r['certificate']}'), mode: LaunchMode.externalApplication), child: const Text('🏆 Certificate Download karo')),
+      Container(margin: const EdgeInsets.only(top: 12), padding: const EdgeInsets.all(14), decoration: BoxDecoration(color: const Color(0xFFEDE9FE), borderRadius: BorderRadius.circular(16)), child: Row(children: [const Icon(Icons.emoji_events, color: _gold, size: 40), const SizedBox(width: 10), const Expanded(child: Text('Your Rank on Leaderboard')), Text('#${r['rank']}', style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)), Text(' / ${r['players']}')]))]));
+  }
+}
+
+class LiveChatHome extends StatelessWidget {
+  const LiveChatHome({super.key});
+  @override Widget build(BuildContext c) {
+    final room = 'support-${me['ID']}';
+    Widget top(IconData i, Color col, String t, String s, String b, VoidCallback f) => Expanded(child: Container(margin: const EdgeInsets.all(6), padding: const EdgeInsets.all(14), decoration: BoxDecoration(color: col.withOpacity(.12), borderRadius: BorderRadius.circular(18)), child: Column(children: [Icon(i, color: col, size: 54), Text(t, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)), Text(s, style: const TextStyle(fontSize: 12), textAlign: TextAlign.center), const SizedBox(height: 8), FilledButton(style: FilledButton.styleFrom(backgroundColor: col), onPressed: f, child: Text(b))])));
+    return Scaffold(appBar: AppBar(title: const Text('Live Chat')), body: ListView(children: [
+      Fade(Row(children: [top(Icons.chat_bubble, _blue, 'Chat on App', 'Ask your query inside the app', 'Start Chat →', () => go(c, Chat(room: room, title: 'Live Support'))), top(Icons.phone_in_talk, Colors.green, 'Chat on WhatsApp', 'Talk directly on WhatsApp', 'Chat Now →', () async { final cfg = await api('GET', '/api/config'); final n = (cfg['whatsapp'] ?? '').toString(); if (n.isEmpty) { if (c.mounted) snack(c, 'WhatsApp number abhi set nahi hai'); } else { launchUrl(Uri.parse('https://wa.me/$n'), mode: LaunchMode.externalApplication); } })])),
+      const Padding(padding: EdgeInsets.fromLTRB(16, 12, 16, 4), child: Text('Quick Help Topics', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17))),
+      for (var i = 0; i < 5; i++) Fade(i: i, Card(margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 3), child: ListTile(leading: Icon([Icons.how_to_reg, Icons.payment, Icons.quiz, Icons.card_giftcard, Icons.help][i], color: _blue), title: Text(['Course Enrollment', 'Payment Issues', 'Quiz Related Queries', 'Referral & Commission', 'Other Help'][i]), trailing: const Icon(Icons.chevron_right), onTap: () => go(c, Chat(room: room, title: 'Live Support', first: ['Course enrollment ke baare me poochna hai', 'Payment me problem hai', 'Quiz ke baare me poochna hai', 'Referral commission kaise milta hai', 'Mujhe team se baat karni hai'][i]))))),
+      Container(margin: const EdgeInsets.all(14), padding: const EdgeInsets.all(16), decoration: BoxDecoration(gradient: const LinearGradient(colors: [_dark, Color(0xFF7C3AED)]), borderRadius: BorderRadius.circular(20)), child: Row(children: [const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('We are here to help!', style: TextStyle(color: _gold, fontSize: 20, fontWeight: FontWeight.bold)), Text('Koi sawal? Bas chat shuru karo.', style: TextStyle(color: Colors.white70))])), Image.network(photo, height: 90, errorBuilder: (_, __, ___) => const SizedBox())]))]));
+  }
+}
+
+class ReferPage extends StatelessWidget {
+  const ReferPage({super.key});
+  @override Widget build(BuildContext c) => Scaffold(appBar: AppBar(title: const Text('Refer & Earn')), body: FutureBuilder(future: api('GET', '/api/me'), builder: (_, s) {
+        if (!s.hasData || s.data is! Map || (s.data as Map)['user'] == null) return const Center(child: CircularProgressIndicator());
+        final d = s.data as Map; final u = d['user']; final code = '${u['Roll']}'; final earned = (u['Earned'] ?? 0) as int, paid = (u['Paid'] ?? 0) as int;
+        Widget st(IconData i, num v, String t, {bool rs = false}) => Expanded(child: Container(margin: const EdgeInsets.all(4), padding: const EdgeInsets.symmetric(vertical: 12), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)), child: Column(children: [Icon(i, color: _blue), TweenAnimationBuilder<double>(tween: Tween(begin: 0, end: v.toDouble()), duration: const Duration(milliseconds: 900), builder: (_, x, __) => Text('${rs ? '₹' : ''}${x.round()}', style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold))), Text(t, style: const TextStyle(fontSize: 10), textAlign: TextAlign.center)])));
+        return ListView(children: [
+          Container(margin: const EdgeInsets.all(14), padding: const EdgeInsets.all(20), decoration: BoxDecoration(gradient: const LinearGradient(colors: [_dark, Color(0xFF7C3AED)]), borderRadius: BorderRadius.circular(22)), child: Row(children: [const Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text('Refer & Earn', style: TextStyle(color: _gold, fontSize: 30, fontWeight: FontWeight.bold)), Text('Dosto ko course refer karo aur 10% commission pao!', style: TextStyle(color: Colors.white))])), Pulse(Container(padding: const EdgeInsets.all(14), decoration: const BoxDecoration(color: _gold, shape: BoxShape.circle), child: const Text('10%', style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold))))])),
+          const Padding(padding: EdgeInsets.symmetric(horizontal: 16), child: Text('Your Referral Code', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+          Container(margin: const EdgeInsets.all(14), padding: const EdgeInsets.only(left: 16), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)), child: Row(children: [Expanded(child: Text(code, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2))), FilledButton(onPressed: () { Clipboard.setData(ClipboardData(text: code)); snack(c, 'Code copy ho gaya'); }, child: const Text('Copy'))])),
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 14), child: FilledButton.icon(icon: const Icon(Icons.share), label: const Text('Share on WhatsApp'), onPressed: () => launchUrl(Uri.parse('https://wa.me/?text=${Uri.encodeComponent('Janhavi Panwar ke courses join karo! Registration me mera referral code daalo: $code')}'), mode: LaunchMode.externalApplication))),
+          const Padding(padding: EdgeInsets.fromLTRB(16, 16, 16, 4), child: Text('Your Referral Stats', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 10), child: Row(children: [st(Icons.people, (d['refCount'] ?? 0) as num, 'Total Referrals'), st(Icons.shopping_cart, (d['refSales'] ?? 0) as num, 'Successful Sales'), st(Icons.schedule, earned - paid, 'Pending', rs: true), st(Icons.emoji_events, earned, 'Total Earnings', rs: true)])),
+          const Padding(padding: EdgeInsets.fromLTRB(16, 16, 16, 4), child: Text('How It Works', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+          Padding(padding: const EdgeInsets.all(10), child: Row(children: [for (final t in [[Icons.link, 'Code Share Karo'], [Icons.shopping_cart, 'Dost Course Kharide'], [Icons.card_giftcard, '10% Commission Pao']]) Expanded(child: Container(margin: const EdgeInsets.all(4), padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14)), child: Column(children: [Icon(t[0] as IconData, color: _blue), Text(t[1] as String, textAlign: TextAlign.center, style: const TextStyle(fontSize: 11))])))]))]);
+      }));
 }
 
 class Profile extends StatelessWidget {
@@ -307,7 +407,8 @@ class Profile extends StatelessWidget {
           item(Icons.workspace_premium, 'My Certificates', 'Download your certificates', () => page(c, 'My Certificates', ListView(children: [for (final x in certs) ListTile(leading: const Icon(Icons.workspace_premium, color: _gold), title: Text(x['CourseTitle']), subtitle: Text(x['Date']), onTap: () => launchUrl(Uri.parse('$base/certificate/${x['ID']}'), mode: LaunchMode.externalApplication))]))),
           item(Icons.star, 'My Reviews', 'Share your feedback', () => page(c, 'Reviews', const ReviewsPage())),
           item(Icons.groups, 'My Community', 'Connect with learners', () => jump(3)),
-          item(Icons.chat, 'Live Chat', 'Chat with our support team', () => go(c, Chat(room: 'support-${me['ID']}', title: 'Live Support'))),
+          item(Icons.chat, 'Live Chat', 'Chat with our support team', () => go(c, const LiveChatHome())),
+          InkWell(onTap: () => go(c, const ReferPage()), child: Container(margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 6), padding: const EdgeInsets.all(14), decoration: BoxDecoration(color: const Color(0xFFFEF3C7), borderRadius: BorderRadius.circular(14)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [const Text('🎁 Refer & Earn 10%', style: TextStyle(fontWeight: FontWeight.bold)), Text('Aapka code: ${u['Roll']}  (tap karke copy karo)'), Text('Kamai: ₹${u['Earned'] ?? 0}  |  Mil chuka: ₹${u['Paid'] ?? 0}')]))),
           item(Icons.logout, 'Logout', 'Sign out from your account', () { token = ''; Navigator.pushAndRemoveUntil(c, MaterialPageRoute(builder: (_) => const Login()), (_) => false); }, Colors.red),
           Container(margin: const EdgeInsets.all(14), padding: const EdgeInsets.all(12), decoration: BoxDecoration(color: const Color(0xFFEDE9FE), borderRadius: BorderRadius.circular(18)), child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('⭐ Your Achievements', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)), const SizedBox(height: 8),
